@@ -11,7 +11,7 @@ Mono-repo of Python packages adding autonomous capabilities to the nomon fleet. 
 | Directory | Package | Status |
 |-----------|---------|--------|
 | `autonomon/` | `autonomon` — core framework: base classes, message types, pipeline runner | Phase 1 in progress |
-| `nomon_explore/` | `nomon_explore` — obstacle-avoidance drive plugin (pre-framework) | Complete |
+| `nomon_explore/` | `nomon_explore` — obstacle-avoidance drive plugin | Complete |
 
 ## Commands
 
