@@ -60,6 +60,31 @@ Each layer is an asyncio coroutine communicating via bounded `asyncio.Queue[dict
 
 All message types are in `autonomon.messages`. Pass dicts (`.to_dict()`) on queues; reconstruct with `.from_dict()` when reading.
 
+## Hot-Swap and Multi-Source Fan-In
+
+Swap-in autonomy at each layer is a first-class feature:
+
+**Runtime hot-swap** (single impl replacement, zero pipeline downtime):
+```python
+await pipeline.swap_layer("perception", new_yolo_model)
+```
+Implemented via `LayerSlot` in `autonomon.slot`. The queues persist across the swap; in-flight messages are never lost.
+
+**Multi-source fan-in** (N impls at one position):
+```python
+from autonomon import FanInSlot, MergeStrategy
+
+# PASS_THROUGH — both sources emit to the same downstream queue
+Pipeline(perception=FanInSlot("perception", [yolo, ultrasonic]))
+
+# ARBITRATE — pick the best plan from competing planners
+Pipeline(planner=FanInSlot("planner", [rule_planner, llm_planner],
+                            MergeStrategy.ARBITRATE, arbiter=pick_best))
+```
+Implemented via `FanInSlot` in `autonomon.fan_in`. `add_impl()` / `remove_impl()` work on a running slot.
+
+**Key modules:** `autonomon.slot` (`LayerSlot`, `SlotState`), `autonomon.fan_in` (`FanInSlot`, `MergeStrategy`), `autonomon.pipeline` (`Pipeline.swap_layer`).
+
 ## Plugin System
 
 Each plugin package exposes:

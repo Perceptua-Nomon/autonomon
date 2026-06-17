@@ -169,7 +169,7 @@ Emitted by the Action layer after executing each action.
 
 ---
 
-## Inter-Layer Communication
+## Inter-Layer Communication and Hot-Swap
 
 Layers communicate via `asyncio.Queue[dict]` populated with JSON-serialisable dicts. The `Pipeline` class wires up the queues and starts each layer as an asyncio task:
 
@@ -184,6 +184,63 @@ await pipeline.run()
 ```
 
 Each queue has a bounded capacity (default 32) to create back-pressure: if the action layer falls behind, the planner pauses; if the planner pauses, the world model pauses; if the world model pauses, perception slows its polling.
+
+### Hot-Swap: replacing one layer at runtime
+
+Each layer position is managed by a `LayerSlot` that owns the asyncio Task. The queues are attached to the slot, not the task — so swapping the implementation keeps the queues intact and in-flight messages are never lost.
+
+```python
+# Swap YOLO for a different vision model mid-run
+await pipeline.swap_layer("perception", new_vision_model)
+```
+
+The state machine: `stop()` on old impl → await its task (drain_timeout, default 2 s) → create new task for new impl on the **same queues**. The other three layers never pause.
+
+### Multi-source fan-in: N implementations at one position
+
+Pass a `FanInSlot` instead of a single implementation to run N concurrent sources at one layer position.
+
+**Perception fan-in (PASS_THROUGH):** Both sources write to the same downstream queue. Back-pressure applies to all sources: when the queue fills, all sources pause.
+
+```python
+from autonomon import FanInSlot, MergeStrategy
+
+pipeline = Pipeline(
+    perception=FanInSlot(
+        "perception",
+        [YoloPerception(device_url, token), UltrasonicPerception(device_url, token)],
+        MergeStrategy.PASS_THROUGH,
+    ),
+    world_model=MyWorldModel(),
+    planner=MyPlanner(config),
+    action=MyAction(device_url, token),
+)
+```
+
+**Planning fan-in (ARBITRATE):** A dispatcher copies each `WorldStateUpdate` to both planners; each planner writes its plan to an internal arbiter queue; within a configurable window (default 50 ms), an arbiter function selects the best plan and forwards it to the Action layer.
+
+```python
+pipeline = Pipeline(
+    perception=MyPerception(device_url, token),
+    world_model=MyWorldModel(),
+    planner=FanInSlot(
+        "planner",
+        [RulePlanner(rules), LLMPlanner(model)],
+        MergeStrategy.ARBITRATE,
+        arbiter=pick_highest_confidence_plan,
+        arbitration_window_ms=50,
+    ),
+    action=MyAction(device_url, token),
+)
+```
+
+**Dynamic add/remove:** Sources can be added or removed from a running `FanInSlot` without restarting the pipeline.
+
+```python
+fan_in_slot = pipeline._slots["perception"]  # FanInSlot
+await fan_in_slot.add_impl(new_sensor)
+await fan_in_slot.remove_impl(old_sensor)
+```
 
 ---
 

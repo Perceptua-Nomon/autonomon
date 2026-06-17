@@ -124,4 +124,26 @@ async def test_pipeline_stops_cleanly() -> None:
         await pipeline.stop()
 
     await asyncio.gather(pipeline.run(), _stop_after(), return_exceptions=True)
-    assert pipeline._tasks == []
+    # All slot tasks should be done after stop
+    for slot in pipeline._slots.values():
+        assert all(t.done() for t in slot.tasks)
+
+
+@pytest.mark.asyncio
+async def test_pipeline_swap_layer() -> None:
+    perception1 = _StubPerception([])
+    perception2 = _StubPerception([])
+    world_model = _StubWorldModel()
+    planner = _StubPlanner()
+    action = _StubAction()
+
+    pipeline = Pipeline(perception1, world_model, planner, action)
+
+    async def _swap_then_stop() -> None:
+        await asyncio.sleep(0.1)
+        await pipeline.swap_layer("perception", perception2)
+        await asyncio.sleep(0.1)
+        await pipeline.stop()
+
+    await asyncio.gather(pipeline.run(), _swap_then_stop(), return_exceptions=True)
+    assert pipeline._slots["perception"].impl is perception2
