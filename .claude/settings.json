@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run pytest*)",
+      "Bash(uv run ruff*)",
+      "Bash(uv run black*)",
+      "Bash(uv run mypy*)",
+      "Bash(uv sync*)",
+      "Bash(make test*)",
+      "Bash(make lint*)",
+      "Bash(make format*)",
+      "Bash(make check*)",
+      "Bash(make type-check*)",
+      "Bash(make install*)",
+      "Bash(make clean*)",
+      "Bash(ls*)",
+      "Bash(find . *)",
+      "Bash(grep *)",
+      "Bash(rg *)",
+      "Bash(git status*)",
+      "Bash(git log*)",
+      "Bash(git diff*)",
+      "Bash(git show*)",
+      "Bash(git branch*)"
+    ],
+    "deny": []
+  }
+}
