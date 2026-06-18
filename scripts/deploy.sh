@@ -350,18 +350,96 @@ _manifest="$("${NOMOTHETIC_VENV}/bin/python" -c \
     'from autonomon.routines import nomon_manifest; print(nomon_manifest["name"], nomon_manifest["routines"])')"
 echo "  Manifest: ${_manifest} ✓"
 
-# ── Reload nomothetic plugin manager ──────────────────────────────────────────
-# If nomothetic-api.service is running, send SIGHUP to trigger a plugin rescan
-# so the newly installed autonomon is discovered without a full restart.
+# ── Plugin auth: key + env file (ADR-019) ─────────────────────────────────────
+# Generate an Ed25519 private key on-device (never leaves the Pi) and write the
+# plugin env file pointing at it. The public half is registered with nomothetic
+# *after* it is confirmed up (below). The JWT itself is never written to disk —
+# the CLI acquires a fresh one at runtime via challenge-response.
 
+PLUGIN_KEY_PATH="/etc/autonomon/plugin.key"
+PLUGIN_ENV_FILE="/etc/autonomon/autonomon.env"
+LOCAL_API_URL="https://127.0.0.1:8443"
+PLUGIN_NAME="autonomon"
+
+# Reuse nomothetic's service user so the key is owned by the account that runs
+# the plugin subprocess; default to 'nomon' if not configured.
+SERVICE_USER="nomon"
+if [[ -f /etc/nomothetic/nomothetic.env ]]; then
+    _su="$(grep -E '^\s*NOMON_SERVICE_USER\s*=' /etc/nomothetic/nomothetic.env \
+           | tail -1 | cut -d= -f2- | tr -d ' "'"'"'')"
+    [[ -n "${_su}" ]] && SERVICE_USER="${_su}"
+fi
+
+echo "==> Generating plugin key (idempotent) at ${PLUGIN_KEY_PATH}..."
+sudo mkdir -p "$(dirname "${PLUGIN_KEY_PATH}")"
+# Generate as the service user so the private key is owned by it from the start.
+if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
+    SERVICE_USER="$(whoami)"
+fi
+PLUGIN_PUBKEY="$(sudo -u "${SERVICE_USER}" "${NOMOTHETIC_VENV}/bin/python" \
+    -m autonomon.plugin_auth generate-key "${PLUGIN_KEY_PATH}")"
+echo "  Key ready (owner: ${SERVICE_USER}) ✓"
+
+DEVICE_HOSTNAME="$(hostname)"
+echo "==> Writing plugin env file ${PLUGIN_ENV_FILE}..."
+_tmp_env="$(mktemp)"
+cat > "${_tmp_env}" <<EOF_PLUGIN_ENV
+# autonomon plugin environment (written by deploy.sh). No secret token here:
+# the device JWT is acquired at runtime via Ed25519 challenge-response (ADR-019).
+NOMON_DEVICE_URL=${LOCAL_API_URL}
+NOMON_PLUGIN_KEY=${PLUGIN_KEY_PATH}
+NOMON_PLUGIN_NAME=${PLUGIN_NAME}
+NOMON_DEVICE_ID=${DEVICE_HOSTNAME}
+EOF_PLUGIN_ENV
+sudo mv -f "${_tmp_env}" "${PLUGIN_ENV_FILE}"
+sudo chmod 644 "${PLUGIN_ENV_FILE}"
+echo "  Env file written ✓"
+
+# ── Reload nomothetic so plugin auth endpoints + discovery are fresh ──────────
+
+_NOMOTHETIC_RUNNING=false
 if command -v systemctl >/dev/null 2>&1; then
     if sudo systemctl is-active --quiet nomothetic-api.service 2>/dev/null; then
         echo "==> Reloading nomothetic-api.service to pick up plugin changes..."
         sudo systemctl reload-or-restart nomothetic-api.service
+        _NOMOTHETIC_RUNNING=true
         echo "  nomothetic-api reloaded ✓"
     fi
 fi
 
+# ── Register the public key with nomothetic (localhost only) ──────────────────
+# Registration is idempotent: re-running deploy with the same key is a no-op.
+
+echo "==> Registering plugin public key with nomothetic (${LOCAL_API_URL})..."
+# Run as the key's owner: the private key is 0600 owned by SERVICE_USER, and the
+# register step reads it to derive the public half. Running as the deploy user
+# would hit a permission error whenever deploy user != SERVICE_USER.
+_register() {
+    sudo -u "${SERVICE_USER}" "${NOMOTHETIC_VENV}/bin/python" -m autonomon.plugin_auth register \
+        --device-url "${LOCAL_API_URL}" --plugin "${PLUGIN_NAME}" --key "${PLUGIN_KEY_PATH}"
+}
+# nomothetic may take a moment to come back after a reload; retry briefly.
+_registered=false
+for _attempt in 1 2 3 4 5 6; do
+    if _register; then
+        _registered=true
+        break
+    fi
+    sleep 2
+done
+if [[ "${_registered}" == "true" ]]; then
+    echo "  Public key registered ✓"
+else
+    echo "  WARNING: could not register the public key automatically." >&2
+    echo "  nomothetic may not be running locally. Register manually with:" >&2
+    echo "    ${NOMOTHETIC_VENV}/bin/python -m autonomon.plugin_auth register \\" >&2
+    echo "      --device-url ${LOCAL_API_URL} --plugin ${PLUGIN_NAME} --key ${PLUGIN_KEY_PATH}" >&2
+fi
+
 echo ""
-echo "✓ autonomon ${TARGET} deployed successfully to ${HOSTNAME}."
+echo "✓ autonomon ${TARGET} deployed successfully to ${DEVICE_HOSTNAME}."
+echo "  Plugin env: ${PLUGIN_ENV_FILE}"
+echo "  Run a routine with:"
+echo "    set -a; . ${PLUGIN_ENV_FILE}; set +a; \\"
+echo "    NOMON_PLUGIN_PARAMS='{\"routine\":\"explore\"}' ${NOMOTHETIC_VENV}/bin/nomon-autonomon"
 END_REMOTE

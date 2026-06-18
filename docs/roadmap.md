@@ -234,10 +234,18 @@ bandwidth). Both honour the same boundary contract.
 for end-to-end autonomy testing.
 
 **Deliverables:**
+- ✅ Plugin auth handshake (nomothetic ADR-019): Ed25519 challenge-response so the
+  plugin obtains a device JWT without any token on disk. `autonomon.plugin_auth`
+  (keygen, signing, `PluginTokenAuth` with refresh-on-401, deploy CLI) +
+  nomothetic `plugin_auth` / `plugin_auth_routes` (`register` localhost-only,
+  `challenge`, `token`). The CLI prefers `NOMON_PLUGIN_KEY` over a static
+  `NOMON_PLUGIN_TOKEN`.
 - ✅ `scripts/deploy.sh` — deploy from latest semver tag or `--local` source tree
   via rsync; installs autonomon into nomothetic's `.venv`; optional test run;
-  verifies CLI + manifest; reloads `nomothetic-api.service` if running; rollback
-  on failure. Same interface pattern as nomothetic/nomopractic workspace scripts.
+  verifies CLI + manifest; **generates the on-device key, writes the plugin env
+  file (no token), and registers the public key over loopback**; reloads
+  `nomothetic-api.service` if running; rollback on failure. Same interface
+  pattern as nomothetic/nomopractic workspace scripts.
 - ✅ `.github/workflows/ci.yml` — `check` job (ruff + black + mypy + pytest with
   coverage) on push/PR to main; `release` job creates a GitHub Release on `v*` tags.
 - 🔲 Device integration test (CI job): spin up mock nomothetic, run `nomon-autonomon`

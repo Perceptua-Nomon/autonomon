@@ -2,19 +2,27 @@
 
 This is the one plugin entry point over the routine registry (ADR-003 D2). It:
 
-1. Reads ``NOMON_DEVICE_URL``, ``NOMON_PLUGIN_TOKEN``, and ``NOMON_PLUGIN_PARAMS``
-   (JSON) from the environment.
+1. Reads ``NOMON_DEVICE_URL`` and ``NOMON_PLUGIN_PARAMS`` (JSON) from the
+   environment, plus credentials (see below).
 2. Extracts the routine name from the params (a ``routine`` / ``name`` key).
-3. Builds the shared ``httpx.AsyncClient`` per ADR-002 (base URL, bearer token,
-   ``verify=False``, a request timeout).
+3. Builds the shared ``httpx.AsyncClient`` per ADR-002 (base URL, ``verify=False``,
+   a request timeout) with one of two auth modes.
 4. Looks up the routine factory, builds its :class:`~autonomon.pipeline.Pipeline`,
    and runs it.
 5. Emits NDJSON lifecycle events to stdout (``starting`` / ``running`` /
    ``stopping`` / ``error``) per ``architecture.md``.
 
-The token is never logged or echoed. The core logic lives in :func:`run` (async)
-and the synchronous :func:`main` wrapper, which are unit-testable without real
-environment or network by injecting a client factory.
+Auth modes (preferred first):
+
+* **Key-based (nomothetic ADR-019):** if ``NOMON_PLUGIN_KEY`` points at an Ed25519 private
+  key, the client uses :class:`~autonomon.plugin_auth.PluginTokenAuth` to acquire
+  and refresh a device JWT via challenge-response. No token is ever on disk.
+* **Static token:** if ``NOMON_PLUGIN_TOKEN`` is set, it is used as a bearer
+  token directly (manual/testing fallback).
+
+The token/key is never logged or echoed. The core logic lives in :func:`run`
+(async) and the synchronous :func:`main` wrapper, which are unit-testable without
+real environment or network by injecting a client factory.
 """
 
 from __future__ import annotations
@@ -23,7 +31,7 @@ import asyncio
 import json
 import os
 import sys
-from typing import Any, Callable
+from typing import Any, Callable, Union
 
 import httpx
 
@@ -33,8 +41,11 @@ from autonomon.routines.registry import UnknownRoutineError, get_routine
 # Per-request timeout for the shared device client (ADR-002).
 _REQUEST_TIMEOUT_S = 5.0
 
+# An auth value is either a bearer-token string or a prepared httpx.Auth flow.
+AuthValue = Union[str, httpx.Auth]
+
 # Factory type for the device HTTP client, so tests can inject a mock.
-ClientFactory = Callable[[str, str], httpx.AsyncClient]
+ClientFactory = Callable[[str, AuthValue], httpx.AsyncClient]
 
 
 def emit(event_type: str, data: dict[str, Any]) -> None:
@@ -51,11 +62,24 @@ def emit(event_type: str, data: dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
-def _build_client(device_url: str, token: str) -> httpx.AsyncClient:
-    """Build the shared device client per ADR-002 (base URL, bearer, verify=False)."""
+def _build_client(device_url: str, auth: AuthValue) -> httpx.AsyncClient:
+    """Build the shared device client per ADR-002 (base URL, verify=False).
+
+    *auth* is either a bearer-token string (set as a static ``Authorization``
+    header) or an :class:`httpx.Auth` flow (e.g.
+    :class:`~autonomon.plugin_auth.PluginTokenAuth`, which acquires/refreshes a
+    device JWT per request).
+    """
+    if isinstance(auth, str):
+        return httpx.AsyncClient(
+            base_url=device_url,
+            headers={"Authorization": f"Bearer {auth}"},
+            verify=False,
+            timeout=_REQUEST_TIMEOUT_S,
+        )
     return httpx.AsyncClient(
         base_url=device_url,
-        headers={"Authorization": f"Bearer {token}"},
+        auth=auth,
         verify=False,
         timeout=_REQUEST_TIMEOUT_S,
     )
@@ -73,7 +97,7 @@ def _routine_name(params: dict[str, Any]) -> str:
 
 async def run(
     device_url: str,
-    token: str,
+    auth: AuthValue,
     params: dict[str, Any],
     device_id: str,
     client_factory: ClientFactory = _build_client,
@@ -84,8 +108,9 @@ async def run(
     ----------
     device_url : str
         Base URL of the device's nomothetic REST API (``NOMON_DEVICE_URL``).
-    token : str
-        Device-scoped JWT (``NOMON_PLUGIN_TOKEN``). Never logged.
+    auth : str or httpx.Auth
+        Either a bearer-token string or a prepared auth flow (e.g.
+        :class:`~autonomon.plugin_auth.PluginTokenAuth`). Never logged.
     params : dict
         Routine params (parsed ``NOMON_PLUGIN_PARAMS``); selects the routine via
         a ``routine`` / ``name`` key and parameterises its layers.
@@ -108,7 +133,7 @@ async def run(
         emit("error", {"message": str(exc)})
         return 1
 
-    client = client_factory(device_url, token)
+    client = client_factory(device_url, auth)
     try:
         pipeline: Pipeline = factory(client, device_id, params)
         emit("running", {"routine": name, "device_id": device_id})
@@ -125,20 +150,51 @@ async def run(
         await client.aclose()
 
 
+def _resolve_auth(device_url: str) -> AuthValue | None:
+    """Resolve device auth from the environment, preferring key-based auth.
+
+    Returns ``None`` (and emits an ``error`` event) if no usable credential is
+    configured. ``NOMON_PLUGIN_KEY`` (Ed25519 private key path) takes precedence
+    over a static ``NOMON_PLUGIN_TOKEN``.
+    """
+    key_path = os.environ.get("NOMON_PLUGIN_KEY", "")
+    if key_path:
+        # Imported lazily so the static-token path needs no cryptography import.
+        from autonomon.plugin_auth import PluginTokenAuth, load_private_key
+
+        plugin_name = os.environ.get("NOMON_PLUGIN_NAME", "autonomon")
+        try:
+            private_key = load_private_key(key_path)
+        except (OSError, ValueError) as exc:
+            emit("error", {"message": f"could not load NOMON_PLUGIN_KEY: {exc}"})
+            return None
+        return PluginTokenAuth(device_url, plugin_name, private_key, verify=False)
+
+    token = os.environ.get("NOMON_PLUGIN_TOKEN", "")
+    if token:
+        return token
+
+    emit(
+        "error",
+        {"message": "set NOMON_PLUGIN_KEY (preferred) or NOMON_PLUGIN_TOKEN for device auth"},
+    )
+    return None
+
+
 def main() -> int:
     """Console-script entry point: read env, run the routine, return an exit code.
 
-    Reads ``NOMON_DEVICE_URL``, ``NOMON_PLUGIN_TOKEN``, ``NOMON_PLUGIN_PARAMS``,
-    and the optional ``NOMON_DEVICE_ID`` from the environment. The token is never
-    echoed. Returns the process exit code (``0`` clean, ``1`` on error).
+    Reads ``NOMON_DEVICE_URL``, ``NOMON_PLUGIN_PARAMS``, the optional
+    ``NOMON_DEVICE_ID``, and credentials (``NOMON_PLUGIN_KEY`` preferred, else
+    ``NOMON_PLUGIN_TOKEN``). Secrets are never echoed. Returns the process exit
+    code (``0`` clean, ``1`` on error).
     """
     device_url = os.environ.get("NOMON_DEVICE_URL", "")
-    token = os.environ.get("NOMON_PLUGIN_TOKEN", "")
     raw_params = os.environ.get("NOMON_PLUGIN_PARAMS", "{}")
     device_id = os.environ.get("NOMON_DEVICE_ID", "nomon")
 
-    if not device_url or not token:
-        emit("error", {"message": "NOMON_DEVICE_URL and NOMON_PLUGIN_TOKEN are required"})
+    if not device_url:
+        emit("error", {"message": "NOMON_DEVICE_URL is required"})
         return 1
 
     try:
@@ -150,8 +206,12 @@ def main() -> int:
         emit("error", {"message": "NOMON_PLUGIN_PARAMS must be a JSON object"})
         return 1
 
+    auth = _resolve_auth(device_url)
+    if auth is None:
+        return 1
+
     try:
-        return asyncio.run(run(device_url, token, params, device_id))
+        return asyncio.run(run(device_url, auth, params, device_id))
     except KeyboardInterrupt:
         emit("stopping", {"reason": "interrupted"})
         return 0

@@ -180,13 +180,16 @@ def test_main_non_object_params_emits_error(monkeypatch, capsys) -> None:
 
 def test_main_runs_routine_via_run(monkeypatch, capsys) -> None:
     monkeypatch.setenv("NOMON_DEVICE_URL", "https://device:8443")
+    # Exercise the static-token path explicitly: clear any ambient key so
+    # _resolve_auth does not prefer key-based auth on the test machine.
+    monkeypatch.delenv("NOMON_PLUGIN_KEY", raising=False)
     monkeypatch.setenv("NOMON_PLUGIN_TOKEN", "tok")
     monkeypatch.setenv("NOMON_PLUGIN_PARAMS", json.dumps({"routine": "explore"}))
 
     fake_pipeline = MagicMock()
     fake_pipeline.run = AsyncMock(return_value=None)
     monkeypatch.setattr(cli, "get_routine", lambda name: (lambda c, d, p: fake_pipeline))
-    monkeypatch.setattr(cli, "_build_client", lambda url, token: AsyncMock(spec=httpx.AsyncClient))
+    monkeypatch.setattr(cli, "_build_client", lambda url, auth: AsyncMock(spec=httpx.AsyncClient))
 
     code = cli.main()
 
