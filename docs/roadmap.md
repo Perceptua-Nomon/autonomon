@@ -10,8 +10,9 @@
 | 3 | Occupancy-grid world model | 🟡 Minimal slice (`ObstacleWorldModel`); occupancy grid pending |
 | 4 | Rule-based planner | 🟡 Minimal slice (`AvoidancePlanner`); rule-table/TOML pending |
 | 5 | Vehicle action executor | 🟡 Minimal slice (`VehicleAction`); retry/backoff + safety-stop pending |
-| 6 | Routine registry (`explore` as first entry) | 🔲 Planned (reshapes former "migrate nomon_explore") |
+| 6 | Routine registry (`explore` as first entry) | ✅ Complete |
 | 6b | `follow-user` routine (new perception/world-model/planner) | 🔲 Planned |
+| 6c | Device deployment & integration testing | 🔲 Planned |
 | 7 | Autonomy telemetry to ArcadeDB | 🔲 Planned |
 
 > **Vertical slice (current):** A minimal concrete implementation of every layer
@@ -224,6 +225,35 @@ autonomon vision perception layer. The open decision is *where the autonomon
 process runs* for this routine: on-device (lower latency, heavier CPU load on
 the Pi Zero 2W) vs. on a remote host (offload detection, adds frame-transfer
 bandwidth). Both honour the same boundary contract.
+
+---
+
+### Phase 6c — Device Deployment & Integration Testing
+
+**Goal:** Enable autonomous capability deployment to devices and add CI checks
+for end-to-end autonomy testing.
+
+**Deliverables:**
+- Deployment scripts (`scripts/deploy.sh`) supporting:
+  - Deploy from latest Git tag in the repository
+  - Deploy from local repository (development mode)
+  - Similar interface to nomothetic/nomopractic workspace deployment scripts
+- `autonomon` package installation to device via package manager or direct install
+- CI checks (`.github/workflows/autonomon.yml` or similar):
+  - Unit tests (pytest; already running locally)
+  - Type checking (mypy)
+  - Linting (ruff + black)
+  - Device integration test: spin up mock nomothetic, deploy autonomon plugin,
+    run `explore` routine against mock device, verify sensor reads → actions flow
+  - Policy check: ensure no new code violates the four-layer architecture or
+    the brain principle (ADR-004)
+- README or deployment guide documenting the deploy process for developers
+
+**Rationale:** Phase 6 is complete but exists only in the repo; Phase 6b/7 will
+add more routines. Without automated deployment and CI, we cannot verify that
+the autonomy stack works end-to-end on actual hardware, and regressions can
+silently break the pipeline. Deployment scripts let developers/QA test quickly;
+CI ensures the contract holds across the fleet.
 
 ---
 
