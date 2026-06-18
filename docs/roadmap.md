@@ -12,7 +12,7 @@
 | 5 | Vehicle action executor | 🟡 Minimal slice (`VehicleAction`); retry/backoff + safety-stop pending |
 | 6 | Routine registry (`explore` as first entry) | ✅ Complete |
 | 6b | `follow-user` routine (new perception/world-model/planner) | 🔲 Planned |
-| 6c | Device deployment & integration testing | 🔲 Planned |
+| 6c | Device deployment & integration testing | 🟡 In progress (scripts + CI done; integration test pending) |
 | 7 | Autonomy telemetry to ArcadeDB | 🔲 Planned |
 
 > **Vertical slice (current):** A minimal concrete implementation of every layer
@@ -234,20 +234,17 @@ bandwidth). Both honour the same boundary contract.
 for end-to-end autonomy testing.
 
 **Deliverables:**
-- Deployment scripts (`scripts/deploy.sh`) supporting:
-  - Deploy from latest Git tag in the repository
-  - Deploy from local repository (development mode)
-  - Similar interface to nomothetic/nomopractic workspace deployment scripts
-- `autonomon` package installation to device via package manager or direct install
-- CI checks (`.github/workflows/autonomon.yml` or similar):
-  - Unit tests (pytest; already running locally)
-  - Type checking (mypy)
-  - Linting (ruff + black)
-  - Device integration test: spin up mock nomothetic, deploy autonomon plugin,
-    run `explore` routine against mock device, verify sensor reads → actions flow
-  - Policy check: ensure no new code violates the four-layer architecture or
-    the brain principle (ADR-004)
-- README or deployment guide documenting the deploy process for developers
+- ✅ `scripts/deploy.sh` — deploy from latest semver tag or `--local` source tree
+  via rsync; installs autonomon into nomothetic's `.venv`; optional test run;
+  verifies CLI + manifest; reloads `nomothetic-api.service` if running; rollback
+  on failure. Same interface pattern as nomothetic/nomopractic workspace scripts.
+- ✅ `.github/workflows/ci.yml` — `check` job (ruff + black + mypy + pytest with
+  coverage) on push/PR to main; `release` job creates a GitHub Release on `v*` tags.
+- 🔲 Device integration test (CI job): spin up mock nomothetic, run `nomon-autonomon`
+  with the `explore` routine against a mock device, assert sensor reads → stop/drive
+  commands reach the mock. Extends the existing `test_pipeline_integration.py`
+  approach into a subprocess-level test suitable for CI.
+- 🔲 README or deployment guide documenting the deploy process for developers.
 
 **Rationale:** Phase 6 is complete but exists only in the repo; Phase 6b/7 will
 add more routines. Without automated deployment and CI, we cannot verify that
