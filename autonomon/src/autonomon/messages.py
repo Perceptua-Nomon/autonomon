@@ -4,10 +4,11 @@ All types are JSON-serialisable dataclasses passed through asyncio.Queue[dict]
 between layers. Use to_dict() when writing to a queue; use from_dict() when
 reading. This keeps queues typed as Queue[dict] for easy NDJSON serialisation.
 """
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 @dataclass
@@ -29,14 +30,14 @@ class PerceptionEvent:
     timestamp: str
     device_id: str
     sensor_type: str
-    data: Dict[str, Any] = field(default_factory=dict)
+    data: dict[str, Any] = field(default_factory=dict)
     type: str = field(default="perception_event", init=False)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "PerceptionEvent":
+    def from_dict(cls, d: dict[str, Any]) -> PerceptionEvent:
         d = dict(d)
         d.pop("type", None)
         return cls(**d)
@@ -60,15 +61,15 @@ class WorldStateUpdate:
 
     timestamp: str
     device_id: str
-    state: Dict[str, Any] = field(default_factory=dict)
-    delta: Dict[str, Any] = field(default_factory=dict)
+    state: dict[str, Any] = field(default_factory=dict)
+    delta: dict[str, Any] = field(default_factory=dict)
     type: str = field(default="world_state_update", init=False)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "WorldStateUpdate":
+    def from_dict(cls, d: dict[str, Any]) -> WorldStateUpdate:
         d = dict(d)
         d.pop("type", None)
         return cls(**d)
@@ -94,14 +95,14 @@ class ActionPlan:
     timestamp: str
     device_id: str
     plan_id: str
-    actions: List[Dict[str, Any]] = field(default_factory=list)
+    actions: list[dict[str, Any]] = field(default_factory=list)
     type: str = field(default="action_plan", init=False)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "ActionPlan":
+    def from_dict(cls, d: dict[str, Any]) -> ActionPlan:
         d = dict(d)
         d.pop("type", None)
         return cls(**d)
@@ -132,17 +133,17 @@ class ActionResult:
     timestamp: str
     device_id: str
     plan_id: str
-    action: Dict[str, Any] = field(default_factory=dict)
+    action: dict[str, Any] = field(default_factory=dict)
     success: bool = True
-    data: Dict[str, Any] = field(default_factory=dict)
-    error: Optional[str] = None
+    data: dict[str, Any] = field(default_factory=dict)
+    error: str | None = None
     type: str = field(default="action_result", init=False)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "ActionResult":
+    def from_dict(cls, d: dict[str, Any]) -> ActionResult:
         d = dict(d)
         d.pop("type", None)
         return cls(**d)

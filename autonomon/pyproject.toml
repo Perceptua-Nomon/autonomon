@@ -39,6 +39,9 @@ dev = [
     "mypy>=1.0",
 ]
 
+[project.scripts]
+nomon-autonomon = "autonomon.routines.cli:main"
+
 [project.urls]
 Repository = "https://github.com/Perceptua/autonomon"
 

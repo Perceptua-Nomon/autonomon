@@ -1,6 +1,7 @@
 """Tests for FanInSlot multi-source and arbitration behaviour."""
+
 import asyncio
-from typing import Any, Dict, List
+from typing import Any
 
 import pytest
 
@@ -38,9 +39,7 @@ class _PassThroughWorldModel(WorldModelBase):
         while not self._stop.is_set():
             try:
                 msg = await asyncio.wait_for(queue_in.get(), timeout=0.05)
-                update = WorldStateUpdate(
-                    timestamp="t", device_id="test", state={"raw": msg}
-                )
+                update = WorldStateUpdate(timestamp="t", device_id="test", state={"raw": msg})
                 await queue_out.put(update.to_dict())
             except asyncio.TimeoutError:
                 pass
@@ -57,7 +56,7 @@ class _ConfidentPlanner(PlannerBase):
     async def run(self, queue_in: asyncio.Queue, queue_out: asyncio.Queue) -> None:
         while not self._stop.is_set():
             try:
-                msg = await asyncio.wait_for(queue_in.get(), timeout=0.05)
+                await asyncio.wait_for(queue_in.get(), timeout=0.05)
                 plan = ActionPlan(
                     timestamp="t",
                     device_id="test",
@@ -136,7 +135,7 @@ async def test_fan_in_world_model_both_see_all_events() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _pick_highest_confidence(candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _pick_highest_confidence(candidates: list[dict[str, Any]]) -> dict[str, Any]:
     return max(candidates, key=lambda p: p["actions"][0]["confidence"])
 
 

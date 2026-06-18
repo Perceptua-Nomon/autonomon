@@ -1,4 +1,5 @@
 """Tests for LayerSlot hot-swap behaviour."""
+
 import asyncio
 
 import pytest
@@ -80,6 +81,7 @@ async def test_slot_concurrent_swap_serialised() -> None:
     slot.start(queue_in=None, queue_out=q_out)
 
     results = []
+
     async def _swap(to, tag):
         await slot.swap(to)
         results.append(tag)

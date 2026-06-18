@@ -1,4 +1,5 @@
 """Abstract base class for the Action layer."""
+
 from __future__ import annotations
 
 import asyncio

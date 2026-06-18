@@ -4,12 +4,13 @@ A slot owns its asyncio Task and remembers the queues it was started with.
 Calling swap() drains and stops the running implementation, then starts the
 replacement using the same queue objects — so in-flight messages are never lost.
 """
+
 from __future__ import annotations
 
 import asyncio
 import enum
 import logging
-from typing import Optional, Union
+from typing import Union
 
 from autonomon.action.base import ActionBase
 from autonomon.perception.base import PerceptionBase
@@ -41,9 +42,9 @@ class LayerSlot:
     def __init__(self, name: str, impl: AnyLayer) -> None:
         self.name = name
         self._impl = impl
-        self._queue_in: Optional[asyncio.Queue] = None   # type: ignore[type-arg]
-        self._queue_out: Optional[asyncio.Queue] = None  # type: ignore[type-arg]
-        self._task: Optional[asyncio.Task] = None        # type: ignore[type-arg]
+        self._queue_in: asyncio.Queue | None = None  # type: ignore[type-arg]
+        self._queue_out: asyncio.Queue | None = None  # type: ignore[type-arg]
+        self._task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._state = SlotState.STOPPED
         self._swap_lock = asyncio.Lock()
 
@@ -53,11 +54,11 @@ class LayerSlot:
 
     def _make_task(self) -> asyncio.Task:  # type: ignore[type-arg]
         if self._queue_in is None and self._queue_out is not None:
-            coro = self._impl.run(self._queue_out)          # Perception
+            coro = self._impl.run(self._queue_out)  # type: ignore[call-arg]  # Perception
         elif self._queue_out is None and self._queue_in is not None:
-            coro = self._impl.run(self._queue_in)           # Action
+            coro = self._impl.run(self._queue_in)  # type: ignore[call-arg]  # Action
         elif self._queue_in is not None and self._queue_out is not None:
-            coro = self._impl.run(self._queue_in, self._queue_out)  # WorldModel / Planning
+            coro = self._impl.run(self._queue_in, self._queue_out)  # type: ignore[call-arg]  # WorldModel / Planning
         else:
             raise RuntimeError(f"Slot '{self.name}': both queue_in and queue_out are None")
         return asyncio.create_task(coro, name=self.name)
@@ -68,8 +69,8 @@ class LayerSlot:
 
     def start(
         self,
-        queue_in: Optional[asyncio.Queue],   # type: ignore[type-arg]
-        queue_out: Optional[asyncio.Queue],  # type: ignore[type-arg]
+        queue_in: asyncio.Queue | None,  # type: ignore[type-arg]
+        queue_out: asyncio.Queue | None,  # type: ignore[type-arg]
     ) -> asyncio.Task:  # type: ignore[type-arg]
         """Assign queues and start the layer task.
 

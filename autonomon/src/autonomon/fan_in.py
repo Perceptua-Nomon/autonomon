@@ -20,12 +20,13 @@ Fan-out (for WorldModel / Planning / Action positions):
     Private queues are unbounded to prevent a slow impl from blocking the
     dispatcher and thus stalling the upstream layer.
 """
+
 from __future__ import annotations
 
 import asyncio
 import enum
 import logging
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable
 
 from autonomon.slot import AnyLayer
 
@@ -61,9 +62,9 @@ class FanInSlot:
     def __init__(
         self,
         name: str,
-        impls: List[AnyLayer],
+        impls: list[AnyLayer],
         merge_strategy: MergeStrategy = MergeStrategy.PASS_THROUGH,
-        arbiter: Optional[Callable[[List[Dict[str, Any]]], Dict[str, Any]]] = None,
+        arbiter: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None,
         arbitration_window_ms: float = 50.0,
     ) -> None:
         if not impls:
@@ -74,19 +75,21 @@ class FanInSlot:
             )
 
         self.name = name
-        self._impls: List[AnyLayer] = list(impls)
+        self._impls: list[AnyLayer] = list(impls)
         self._merge_strategy = merge_strategy
         self._arbiter = arbiter
         self._arbitration_window_s = arbitration_window_ms / 1000.0
 
-        self._queue_in: Optional[asyncio.Queue] = None   # type: ignore[type-arg]
-        self._queue_out: Optional[asyncio.Queue] = None  # type: ignore[type-arg]
+        self._queue_in: asyncio.Queue | None = None  # type: ignore[type-arg]
+        self._queue_out: asyncio.Queue | None = None  # type: ignore[type-arg]
 
         # Per-impl private input queues (Strategy B — fan-out of queue_in)
-        self._impl_queues: Dict[int, asyncio.Queue] = {}  # id(impl) → queue  # type: ignore[type-arg]
+        self._impl_queues: dict[int, asyncio.Queue] = (
+            {}
+        )  # id(impl) → queue  # type: ignore[type-arg]
 
         # All running tasks: dispatcher + impl tasks + arbiter task
-        self._all_tasks: List[asyncio.Task] = []  # type: ignore[type-arg]
+        self._all_tasks: list[asyncio.Task] = []  # type: ignore[type-arg]
         self._stop_event = asyncio.Event()
 
     # ------------------------------------------------------------------
@@ -95,8 +98,8 @@ class FanInSlot:
 
     def start(
         self,
-        queue_in: Optional[asyncio.Queue],   # type: ignore[type-arg]
-        queue_out: Optional[asyncio.Queue],  # type: ignore[type-arg]
+        queue_in: asyncio.Queue | None,  # type: ignore[type-arg]
+        queue_out: asyncio.Queue | None,  # type: ignore[type-arg]
     ) -> list:  # list[asyncio.Task]
         """Assign queues and start all impl tasks (and dispatcher/arbiter if needed).
 
@@ -115,9 +118,9 @@ class FanInSlot:
         # Determine the effective queue each impl writes to
         if self._merge_strategy is MergeStrategy.ARBITRATE:
             # Impls write to a shared arbiter collection queue; arbiter picks & forwards
-            effective_out: Optional[asyncio.Queue] = asyncio.Queue()  # type: ignore[type-arg]
+            effective_out: asyncio.Queue | None = asyncio.Queue()  # type: ignore[type-arg]
             arbiter_task = asyncio.create_task(
-                self._arbiter_loop(effective_out, self._queue_out),
+                self._arbiter_loop(effective_out, self._queue_out),  # type: ignore[arg-type]
                 name=f"{self.name}:arbiter",
             )
             self._all_tasks.append(arbiter_task)
@@ -179,7 +182,7 @@ class FanInSlot:
             New implementation to add (must match the position's base class).
         """
         self._impls.append(impl)
-        effective_out: Optional[asyncio.Queue]  # type: ignore[type-arg]
+        effective_out: asyncio.Queue | None  # type: ignore[type-arg]
         if self._merge_strategy is MergeStrategy.ARBITRATE:
             # Find the existing arbiter queue from the arbiter task
             # It's the first queue arg to _arbiter_loop — stored implicitly in the closure.
@@ -242,24 +245,24 @@ class FanInSlot:
     def _start_impl_task(
         self,
         impl: AnyLayer,
-        effective_out: Optional[asyncio.Queue],  # type: ignore[type-arg]
+        effective_out: asyncio.Queue | None,  # type: ignore[type-arg]
     ) -> asyncio.Task:  # type: ignore[type-arg]
         impl_id = id(impl)
         task_name = f"{self.name}:impl:{impl_id}"
 
         if self._queue_in is None:
             # Perception position: impl.run(queue_out)
-            coro = impl.run(effective_out)
+            coro = impl.run(effective_out)  # type: ignore[call-arg, arg-type]
         elif self._queue_out is None:
             # Action position: impl.run(queue_in) — each gets its own copy
             private_q: asyncio.Queue = asyncio.Queue()  # type: ignore[type-arg]
             self._impl_queues[impl_id] = private_q
-            coro = impl.run(private_q)
+            coro = impl.run(private_q)  # type: ignore[call-arg]
         else:
             # WorldModel / Planning: impl.run(queue_in, queue_out)
             private_q = asyncio.Queue()  # type: ignore[type-arg]
             self._impl_queues[impl_id] = private_q
-            coro = impl.run(private_q, effective_out)
+            coro = impl.run(private_q, effective_out)  # type: ignore[call-arg, arg-type]
 
         task = asyncio.create_task(coro, name=task_name)
         self._all_tasks.append(task)
@@ -278,8 +281,8 @@ class FanInSlot:
 
     async def _arbiter_loop(
         self,
-        arbiter_queue: asyncio.Queue,   # type: ignore[type-arg]
-        queue_out: Optional[asyncio.Queue],  # type: ignore[type-arg]
+        arbiter_queue: asyncio.Queue,  # type: ignore[type-arg]
+        queue_out: asyncio.Queue | None,  # type: ignore[type-arg]
     ) -> None:
         """Collect competing outputs within the window, pick the best, forward it."""
         self._arbiter_queue = arbiter_queue  # stash for add_impl

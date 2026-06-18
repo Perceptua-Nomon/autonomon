@@ -1,4 +1,5 @@
 """Abstract base class for the World Model layer."""
+
 from __future__ import annotations
 
 import asyncio
