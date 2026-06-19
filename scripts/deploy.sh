@@ -218,12 +218,16 @@ cd "${REMOTE_DIR}"
 
 # ── Save current installed version for rollback ────────────────────────────────
 
-PREV_VERSION="$(python3 -m pip show autonomon 2>/dev/null \
-    | grep '^Version:' | awk '{print $2}' || echo "")"
-if [[ -n "${PREV_VERSION}" ]]; then
-    echo "  Current installed autonomon: ${PREV_VERSION}"
+if [[ -f "${REMOTE_DIR}/.venv/bin/pip" ]]; then
+    PREV_VERSION="$("${REMOTE_DIR}/.venv/bin/pip" show autonomon 2>/dev/null \
+        | grep '^Version:' | awk '{print $2}' || echo "")"
+    if [[ -n "${PREV_VERSION}" ]]; then
+        echo "  Current installed autonomon: ${PREV_VERSION}"
+    else
+        echo "  autonomon not currently installed."
+    fi
 else
-    echo "  autonomon not currently installed."
+    echo "  No previous venv found."
 fi
 
 # ── Save current git ref for rollback (release mode only) ─────────────────────
@@ -283,11 +287,8 @@ rollback() {
     fi
 
     if [[ -n "${PREV_VERSION:-}" ]]; then
-        echo "  Reinstalling autonomon ${PREV_VERSION}..." >&2
-        (cd "${REMOTE_DIR}" && uv pip install --quiet .) 2>&1 || true
-    elif [[ -n "${PREV_VERSION+x}" ]]; then
-        echo "  autonomon was not installed before; removing..." >&2
-        uv pip uninstall -y autonomon 2>&1 || true
+        echo "  Recreating venv and reinstalling autonomon ${PREV_VERSION}..." >&2
+        (cd "${REMOTE_DIR}" && rm -rf .venv && uv venv --system-site-packages --quiet && uv sync --quiet) 2>&1 || true
     fi
 
     echo "!! Rollback complete." >&2
@@ -303,14 +304,14 @@ if [[ "${DEPLOY_LOCAL}" != "true" ]]; then
     git checkout --quiet "${TARGET}"
 fi
 
-# ── Install autonomon independently using uv ──────────────────────────────────
+# ── Set up venv and install dependencies ────────────────────────────────────────
 
-echo "==> Installing autonomon (${REMOTE_DIR})..."
-if [[ "${DEPLOY_LOCAL}" == "true" ]]; then
-    (cd "${REMOTE_DIR}" && uv pip install --quiet -e .)
-else
-    (cd "${REMOTE_DIR}" && uv pip install --quiet .)
-fi
+echo "==> Setting up venv..."
+(cd "${REMOTE_DIR}" && rm -rf .venv && uv venv --system-site-packages --quiet)
+echo "  Venv created ✓"
+
+echo "==> Installing autonomon and dependencies..."
+(cd "${REMOTE_DIR}" && uv sync --quiet)
 echo "  Install complete ✓"
 
 # ── Optional tests ─────────────────────────────────────────────────────────────
@@ -326,18 +327,18 @@ fi
 # ── Verify installation ────────────────────────────────────────────────────────
 
 echo "==> Verifying installation..."
-_installed_version="$(python3 -m pip show autonomon \
+_installed_version="$("${REMOTE_DIR}/.venv/bin/pip" show autonomon \
     | grep '^Version:' | awk '{print $2}')"
 echo "  autonomon ${_installed_version} installed ✓"
 
-_cli_path="$(command -v nomon-autonomon 2>/dev/null || echo "")"
-if [[ -z "${_cli_path}" ]]; then
-    echo "Error: nomon-autonomon CLI not found in PATH" >&2
+_cli_path="${REMOTE_DIR}/.venv/bin/nomon-autonomon"
+if [[ ! -f "${_cli_path}" ]]; then
+    echo "Error: nomon-autonomon CLI not found at ${_cli_path}" >&2
     exit 1
 fi
 echo "  CLI: ${_cli_path} ✓"
 
-_manifest="$(python3 -c \
+_manifest="$("${REMOTE_DIR}/.venv/bin/python" -c \
     'from autonomon.routines import nomon_manifest; print(nomon_manifest["name"], nomon_manifest["routines"])')"
 echo "  Manifest: ${_manifest} ✓"
 
@@ -367,7 +368,7 @@ sudo mkdir -p "$(dirname "${PLUGIN_KEY_PATH}")"
 if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
     SERVICE_USER="$(whoami)"
 fi
-PLUGIN_PUBKEY="$(sudo -u "${SERVICE_USER}" python3 \
+PLUGIN_PUBKEY="$(sudo -u "${SERVICE_USER}" "${REMOTE_DIR}/.venv/bin/python" \
     -m autonomon.plugin_auth generate-key "${PLUGIN_KEY_PATH}")"
 echo "  Key ready (owner: ${SERVICE_USER}) ✓"
 
@@ -406,7 +407,7 @@ echo "==> Registering plugin public key with nomothetic (${LOCAL_API_URL})..."
 # register step reads it to derive the public half. Running as the deploy user
 # would hit a permission error whenever deploy user != SERVICE_USER.
 _register() {
-    sudo -u "${SERVICE_USER}" python3 -m autonomon.plugin_auth register \
+    sudo -u "${SERVICE_USER}" "${REMOTE_DIR}/.venv/bin/python" -m autonomon.plugin_auth register \
         --device-url "${LOCAL_API_URL}" --plugin "${PLUGIN_NAME}" --key "${PLUGIN_KEY_PATH}"
 }
 # nomothetic may take a moment to come back after a reload; retry briefly.
@@ -423,7 +424,7 @@ if [[ "${_registered}" == "true" ]]; then
 else
     echo "  WARNING: could not register the public key automatically." >&2
     echo "  nomothetic may not be running locally. Register manually with:" >&2
-    echo "    python3 -m autonomon.plugin_auth register \\" >&2
+    echo "    ${REMOTE_DIR}/.venv/bin/python -m autonomon.plugin_auth register \\" >&2
     echo "      --device-url ${LOCAL_API_URL} --plugin ${PLUGIN_NAME} --key ${PLUGIN_KEY_PATH}" >&2
 fi
 
@@ -432,5 +433,5 @@ echo "✓ autonomon ${TARGET} deployed successfully to ${DEVICE_HOSTNAME}."
 echo "  Plugin env: ${PLUGIN_ENV_FILE}"
 echo "  Run a routine with:"
 echo "    set -a; . ${PLUGIN_ENV_FILE}; set +a; \\"
-echo "    NOMON_PLUGIN_PARAMS='{\"routine\":\"explore\"}' nomon-autonomon"
+echo "    NOMON_PLUGIN_PARAMS='{\"routine\":\"explore\"}' ${REMOTE_DIR}/.venv/bin/nomon-autonomon"
 END_REMOTE
