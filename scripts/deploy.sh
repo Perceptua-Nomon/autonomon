@@ -408,7 +408,8 @@ echo "==> Registering plugin public key with nomothetic (${LOCAL_API_URL})..."
 # would hit a permission error whenever deploy user != SERVICE_USER.
 _register() {
     sudo -u "${SERVICE_USER}" "${REMOTE_DIR}/.venv/bin/python" -m autonomon.plugin_auth register \
-        --device-url "${LOCAL_API_URL}" --plugin "${PLUGIN_NAME}" --key "${PLUGIN_KEY_PATH}"
+        --device-url "${LOCAL_API_URL}" --plugin "${PLUGIN_NAME}" --key "${PLUGIN_KEY_PATH}" \
+        2>/dev/null
 }
 # nomothetic may take a moment to come back after a reload; retry briefly.
 _registered=false
@@ -417,7 +418,7 @@ for _attempt in 1 2 3 4 5 6; do
         _registered=true
         break
     fi
-    sleep 2
+    [[ ${_attempt} -lt 6 ]] && sleep 2
 done
 if [[ "${_registered}" == "true" ]]; then
     echo "  Public key registered ✓"
