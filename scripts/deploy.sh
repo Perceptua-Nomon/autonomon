@@ -202,19 +202,15 @@ fi
 readonly REQUESTED_VERSION="$1"
 readonly DEPLOY_LOCAL="${2:-false}"
 readonly REMOTE_DIR="${3:-${HOME}/perceptua-nomon/autonomon}"
-readonly NOMOTHETIC_DIR="${4:-${HOME}/perceptua-nomon/nomothetic}"
 readonly SKIP_TESTS="${NOMON_SKIP_TESTS:-false}"
-readonly PKG_DIR="${REMOTE_DIR}/autonomon"
-readonly NOMOTHETIC_VENV="${NOMOTHETIC_DIR}/.venv"
 
 if [[ ! -d "${REMOTE_DIR}" ]]; then
     echo "Error: ${REMOTE_DIR} does not exist on the Pi." >&2
     exit 1
 fi
 
-if [[ ! -d "${NOMOTHETIC_VENV}" ]]; then
-    echo "Error: nomothetic venv not found at ${NOMOTHETIC_VENV}." >&2
-    echo "  Ensure nomothetic is deployed first." >&2
+if ! command -v uv >/dev/null 2>&1; then
+    echo "Error: uv not found in PATH. Install uv: https://docs.astral.sh/uv/getting-started/" >&2
     exit 1
 fi
 
@@ -222,7 +218,7 @@ cd "${REMOTE_DIR}"
 
 # ── Save current installed version for rollback ────────────────────────────────
 
-PREV_VERSION="$("${NOMOTHETIC_VENV}/bin/pip" show autonomon 2>/dev/null \
+PREV_VERSION="$(python3 -m pip show autonomon 2>/dev/null \
     | grep '^Version:' | awk '{print $2}' || echo "")"
 if [[ -n "${PREV_VERSION}" ]]; then
     echo "  Current installed autonomon: ${PREV_VERSION}"
@@ -288,10 +284,10 @@ rollback() {
 
     if [[ -n "${PREV_VERSION:-}" ]]; then
         echo "  Reinstalling autonomon ${PREV_VERSION}..." >&2
-        "${NOMOTHETIC_VENV}/bin/pip" install --quiet "${PKG_DIR}" 2>&1 || true
+        (cd "${REMOTE_DIR}" && uv pip install --quiet .) 2>&1 || true
     elif [[ -n "${PREV_VERSION+x}" ]]; then
         echo "  autonomon was not installed before; removing..." >&2
-        "${NOMOTHETIC_VENV}/bin/pip" uninstall -y autonomon 2>&1 || true
+        uv pip uninstall -y autonomon 2>&1 || true
     fi
 
     echo "!! Rollback complete." >&2
@@ -307,13 +303,13 @@ if [[ "${DEPLOY_LOCAL}" != "true" ]]; then
     git checkout --quiet "${TARGET}"
 fi
 
-# ── Install into nomothetic's venv ────────────────────────────────────────────
+# ── Install autonomon independently using uv ──────────────────────────────────
 
-echo "==> Installing autonomon into nomothetic venv (${NOMOTHETIC_VENV})..."
+echo "==> Installing autonomon (${REMOTE_DIR})..."
 if [[ "${DEPLOY_LOCAL}" == "true" ]]; then
-    "${NOMOTHETIC_VENV}/bin/pip" install --quiet -e "${PKG_DIR}"
+    (cd "${REMOTE_DIR}" && uv pip install --quiet -e .)
 else
-    "${NOMOTHETIC_VENV}/bin/pip" install --quiet "${PKG_DIR}"
+    (cd "${REMOTE_DIR}" && uv pip install --quiet .)
 fi
 echo "  Install complete ✓"
 
@@ -323,30 +319,25 @@ if [[ "${SKIP_TESTS}" == "true" ]]; then
     echo "==> Skipping tests (--skip-tests flag set)."
 else
     echo "==> Running tests..."
-    if command -v uv >/dev/null 2>&1 && [[ -f "${PKG_DIR}/uv.lock" ]]; then
-        (cd "${PKG_DIR}" && uv sync --all-extras --quiet && uv run pytest tests/ -q)
-    else
-        "${NOMOTHETIC_VENV}/bin/pip" install --quiet pytest pytest-asyncio
-        "${NOMOTHETIC_VENV}/bin/pytest" "${PKG_DIR}/tests/" -q
-    fi
+    (cd "${REMOTE_DIR}" && uv sync --all-extras --quiet && uv run pytest tests/ -q)
     echo "  Tests passed ✓"
 fi
 
 # ── Verify installation ────────────────────────────────────────────────────────
 
 echo "==> Verifying installation..."
-_installed_version="$("${NOMOTHETIC_VENV}/bin/pip" show autonomon \
+_installed_version="$(python3 -m pip show autonomon \
     | grep '^Version:' | awk '{print $2}')"
 echo "  autonomon ${_installed_version} installed ✓"
 
-_cli_path="$(find "${NOMOTHETIC_VENV}/bin" -name "nomon-autonomon" 2>/dev/null | head -1)"
+_cli_path="$(command -v nomon-autonomon 2>/dev/null || echo "")"
 if [[ -z "${_cli_path}" ]]; then
-    echo "Error: nomon-autonomon CLI not found in ${NOMOTHETIC_VENV}/bin" >&2
+    echo "Error: nomon-autonomon CLI not found in PATH" >&2
     exit 1
 fi
 echo "  CLI: ${_cli_path} ✓"
 
-_manifest="$("${NOMOTHETIC_VENV}/bin/python" -c \
+_manifest="$(python3 -c \
     'from autonomon.routines import nomon_manifest; print(nomon_manifest["name"], nomon_manifest["routines"])')"
 echo "  Manifest: ${_manifest} ✓"
 
@@ -376,7 +367,7 @@ sudo mkdir -p "$(dirname "${PLUGIN_KEY_PATH}")"
 if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
     SERVICE_USER="$(whoami)"
 fi
-PLUGIN_PUBKEY="$(sudo -u "${SERVICE_USER}" "${NOMOTHETIC_VENV}/bin/python" \
+PLUGIN_PUBKEY="$(sudo -u "${SERVICE_USER}" python3 \
     -m autonomon.plugin_auth generate-key "${PLUGIN_KEY_PATH}")"
 echo "  Key ready (owner: ${SERVICE_USER}) ✓"
 
@@ -415,7 +406,7 @@ echo "==> Registering plugin public key with nomothetic (${LOCAL_API_URL})..."
 # register step reads it to derive the public half. Running as the deploy user
 # would hit a permission error whenever deploy user != SERVICE_USER.
 _register() {
-    sudo -u "${SERVICE_USER}" "${NOMOTHETIC_VENV}/bin/python" -m autonomon.plugin_auth register \
+    sudo -u "${SERVICE_USER}" python3 -m autonomon.plugin_auth register \
         --device-url "${LOCAL_API_URL}" --plugin "${PLUGIN_NAME}" --key "${PLUGIN_KEY_PATH}"
 }
 # nomothetic may take a moment to come back after a reload; retry briefly.
@@ -432,7 +423,7 @@ if [[ "${_registered}" == "true" ]]; then
 else
     echo "  WARNING: could not register the public key automatically." >&2
     echo "  nomothetic may not be running locally. Register manually with:" >&2
-    echo "    ${NOMOTHETIC_VENV}/bin/python -m autonomon.plugin_auth register \\" >&2
+    echo "    python3 -m autonomon.plugin_auth register \\" >&2
     echo "      --device-url ${LOCAL_API_URL} --plugin ${PLUGIN_NAME} --key ${PLUGIN_KEY_PATH}" >&2
 fi
 
@@ -441,5 +432,5 @@ echo "✓ autonomon ${TARGET} deployed successfully to ${DEVICE_HOSTNAME}."
 echo "  Plugin env: ${PLUGIN_ENV_FILE}"
 echo "  Run a routine with:"
 echo "    set -a; . ${PLUGIN_ENV_FILE}; set +a; \\"
-echo "    NOMON_PLUGIN_PARAMS='{\"routine\":\"explore\"}' ${NOMOTHETIC_VENV}/bin/nomon-autonomon"
+echo "    NOMON_PLUGIN_PARAMS='{\"routine\":\"explore\"}' nomon-autonomon"
 END_REMOTE
