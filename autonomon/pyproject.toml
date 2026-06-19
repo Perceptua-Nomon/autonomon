@@ -27,6 +27,7 @@ classifiers = [
 ]
 dependencies = [
     "httpx>=0.25",
+    "cryptography>=41.0",
 ]
 
 [project.optional-dependencies]
@@ -38,6 +39,9 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.0",
 ]
+
+[project.scripts]
+nomon-autonomon = "autonomon.routines.cli:main"
 
 [project.urls]
 Repository = "https://github.com/Perceptua/autonomon"

@@ -5,6 +5,7 @@ its asyncio Task. Queues are created once in run() and persist for the life
 of the pipeline — allowing hot-swap via swap_layer() without losing in-flight
 messages.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -29,7 +30,7 @@ _ActionArg = Union[ActionBase, FanInSlot]
 _AnySlot = Union[LayerSlot, FanInSlot]
 
 
-def _to_slot(name: str, arg: Union[AnyLayer, FanInSlot]) -> _AnySlot:
+def _to_slot(name: str, arg: AnyLayer | FanInSlot) -> _AnySlot:
     if isinstance(arg, FanInSlot):
         return arg
     return LayerSlot(name, arg)
@@ -80,10 +81,10 @@ class Pipeline:
         q_world: asyncio.Queue = asyncio.Queue(maxsize=self._queue_size)
         q_plan: asyncio.Queue = asyncio.Queue(maxsize=self._queue_size)
 
-        self._slots["perception"].start(queue_in=None,         queue_out=q_perception)
+        self._slots["perception"].start(queue_in=None, queue_out=q_perception)
         self._slots["world_model"].start(queue_in=q_perception, queue_out=q_world)
-        self._slots["planner"].start(queue_in=q_world,         queue_out=q_plan)
-        self._slots["action"].start(queue_in=q_plan,           queue_out=None)
+        self._slots["planner"].start(queue_in=q_world, queue_out=q_plan)
+        self._slots["action"].start(queue_in=q_plan, queue_out=None)
 
         all_tasks = [t for slot in self._slots.values() for t in slot.tasks]
         self._running = True

@@ -1,4 +1,5 @@
 """Tests for Pipeline queue wiring and graceful shutdown."""
+
 import asyncio
 
 import pytest
@@ -41,9 +42,7 @@ class _StubWorldModel(WorldModelBase):
             try:
                 msg = await asyncio.wait_for(queue_in.get(), timeout=0.05)
                 self.received.append(msg)
-                state = WorldStateUpdate(
-                    timestamp="t", device_id="test", state={"raw": msg}
-                )
+                state = WorldStateUpdate(timestamp="t", device_id="test", state={"raw": msg})
                 await queue_out.put(state.to_dict())
             except asyncio.TimeoutError:
                 pass
@@ -146,4 +145,4 @@ async def test_pipeline_swap_layer() -> None:
         await pipeline.stop()
 
     await asyncio.gather(pipeline.run(), _swap_then_stop(), return_exceptions=True)
-    assert pipeline._slots["perception"].impl is perception2
+    assert pipeline._slots["perception"].impl is perception2  # type: ignore[union-attr]

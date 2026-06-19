@@ -1,4 +1,5 @@
 """Tests for message serialisation round-trips."""
+
 from autonomon.messages import ActionPlan, ActionResult, PerceptionEvent, WorldStateUpdate
 
 

@@ -57,10 +57,10 @@ in the plugin's `finally` block.
 ```python
 async with httpx.AsyncClient(...) as client:
     pipeline = Pipeline(
-        perception=UltrasonicPerception(client),
+        perception=Perceptron.ultrasonic(client, device_id),
         world_model=ObstacleWorldModel(),
         planner=AvoidancePlanner(),
-        action=VehicleAction(client),
+        action=VehicleAction(client, device_id),
     )
     await pipeline.run()
 ```
@@ -71,7 +71,7 @@ Network calls inside perception and action layers use:
 
 ```python
 resp = await asyncio.wait_for(
-    client.get("/api/hat/ultrasonic"),
+    client.get("/api/sensor/ultrasonic"),
     timeout=1.0,
 )
 ```
@@ -129,9 +129,10 @@ explicit in the layer contract.
 Layer implementations accept an injectable `httpx.AsyncClient` argument:
 
 ```python
-class UltrasonicPerception(PerceptionBase):
-    def __init__(self, client: httpx.AsyncClient) -> None:
+class Perceptron(PerceptionBase):
+    def __init__(self, client: httpx.AsyncClient, device_id: str, ...) -> None:
         self._client = client
+        self._device_id = device_id
         self._stop = asyncio.Event()
 ```
 
@@ -140,7 +141,7 @@ Tests pass a `pytest-httpx` mock client or an `unittest.mock.AsyncMock`:
 ```python
 async def test_emits_perception_event(mock_client):
     mock_client.get.return_value = Response(200, json={"distance_cm": 18.4})
-    perception = UltrasonicPerception(mock_client)
+    perception = Perceptron.ultrasonic(mock_client, device_id="nomon-test")
     q: asyncio.Queue = asyncio.Queue()
     task = asyncio.create_task(perception.run(q))
     ev = await asyncio.wait_for(q.get(), timeout=1.0)
