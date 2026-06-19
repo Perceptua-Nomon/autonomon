@@ -43,16 +43,15 @@
 # What the script does (release mode):
 #   1. Saves the current installed autonomon version for rollback.
 #   2. Fetches tags from origin and checks out the target version.
-#   3. Installs autonomon into nomothetic's .venv: .venv/bin/pip install .
+#   3. Creates a fresh venv and installs autonomon with uv sync.
 #   4. Optionally runs tests (uv run pytest).
-#   5. Verifies the nomon-autonomon CLI is importable and reports version.
-#   6. Reloads nomothetic's AutonomyPluginManager if nomothetic-api.service
-#      is running (via SIGHUP or service reload).
+#   5. Verifies the nomon-autonomon CLI is installed and importable.
+#   6. Registers the plugin key with nomothetic and reloads its services.
 #
 # What the script does (--local mode):
 #   1. Reads the version from pyproject.toml.
 #   2. Syncs the local source tree to the Pi via rsync.
-#   3. Installs in editable mode: .venv/bin/pip install -e .
+#   3. Creates a fresh venv and installs autonomon in editable mode.
 #   4–6. Same as release mode.
 #
 # Rollback:
@@ -218,9 +217,8 @@ cd "${REMOTE_DIR}"
 
 # ── Save current installed version for rollback ────────────────────────────────
 
-if [[ -f "${REMOTE_DIR}/.venv/bin/pip" ]]; then
-    PREV_VERSION="$("${REMOTE_DIR}/.venv/bin/pip" show autonomon 2>/dev/null \
-        | grep '^Version:' | awk '{print $2}' || echo "")"
+if [[ -f "${REMOTE_DIR}/.venv/bin/python" ]]; then
+    PREV_VERSION="$("${REMOTE_DIR}/.venv/bin/python" -c 'import autonomon; print(autonomon.__version__)' 2>/dev/null || echo "")"
     if [[ -n "${PREV_VERSION}" ]]; then
         echo "  Current installed autonomon: ${PREV_VERSION}"
     else
@@ -327,8 +325,7 @@ fi
 # ── Verify installation ────────────────────────────────────────────────────────
 
 echo "==> Verifying installation..."
-_installed_version="$("${REMOTE_DIR}/.venv/bin/pip" show autonomon \
-    | grep '^Version:' | awk '{print $2}')"
+_installed_version="$("${REMOTE_DIR}/.venv/bin/python" -c 'import autonomon; print(autonomon.__version__)' 2>/dev/null || echo 'unknown')"
 echo "  autonomon ${_installed_version} installed ✓"
 
 _cli_path="${REMOTE_DIR}/.venv/bin/nomon-autonomon"
