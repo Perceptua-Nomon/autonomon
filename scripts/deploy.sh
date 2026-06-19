@@ -50,9 +50,9 @@
 #      is running (via SIGHUP or service reload).
 #
 # What the script does (--local mode):
-#   1. Reads the version from autonomon/pyproject.toml.
+#   1. Reads the version from pyproject.toml.
 #   2. Syncs the local source tree to the Pi via rsync.
-#   3. Installs in editable mode: .venv/bin/pip install -e ./autonomon
+#   3. Installs in editable mode: .venv/bin/pip install -e .
 #   4–6. Same as release mode.
 #
 # Rollback:
@@ -125,10 +125,10 @@ fi
 # ── Local mode: resolve version from pyproject.toml ───────────────────────────
 
 if [[ "${DEPLOY_LOCAL}" == true ]]; then
-    _raw_version="$(grep -m1 '^version' "${REPO_DIR}/autonomon/pyproject.toml" \
+    _raw_version="$(grep -m1 '^version' "${REPO_DIR}/pyproject.toml" \
         | sed -E 's/.*version\s*=\s*"([^"]+)".*/\1/')"
     if [[ -z "${_raw_version}" ]]; then
-        echo "Error: could not determine version from autonomon/pyproject.toml" >&2
+        echo "Error: could not determine version from pyproject.toml" >&2
         exit 1
     fi
     VERSION="v${_raw_version}"
