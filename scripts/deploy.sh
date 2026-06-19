@@ -365,6 +365,9 @@ sudo mkdir -p "$(dirname "${PLUGIN_KEY_PATH}")"
 if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
     SERVICE_USER="$(whoami)"
 fi
+# Make directory writable by SERVICE_USER so key generation succeeds.
+sudo chown "${SERVICE_USER}:" "$(dirname "${PLUGIN_KEY_PATH}")" 2>/dev/null || \
+    sudo chmod u+w "$(dirname "${PLUGIN_KEY_PATH}")"
 PLUGIN_PUBKEY="$(sudo -u "${SERVICE_USER}" "${REMOTE_DIR}/.venv/bin/python" \
     -m autonomon.plugin_auth generate-key "${PLUGIN_KEY_PATH}")"
 echo "  Key ready (owner: ${SERVICE_USER}) ✓"
