@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "autonomon"
 version = "0.1.0"
 description = "Four-layer autonomous capabilities framework for the nomon fleet."
-readme = "../../README.md"
+readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "Apache-2.0"}
 authors = [
