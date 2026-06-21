@@ -31,12 +31,14 @@ import asyncio
 import json
 import os
 import sys
+import uuid
 from typing import Any, Callable, Union
 
 import httpx
 
 from autonomon.pipeline import Pipeline
 from autonomon.routines.registry import UnknownRoutineError, get_routine
+from autonomon.routines.reporting import StatusReporter
 
 # Per-request timeout for the shared device client (ADR-002).
 _REQUEST_TIMEOUT_S = 5.0
@@ -46,6 +48,10 @@ AuthValue = Union[str, httpx.Auth]
 
 # Factory type for the device HTTP client, so tests can inject a mock.
 ClientFactory = Callable[[str, AuthValue], httpx.AsyncClient]
+
+# Factory for the status reporter, so tests can inject one or disable reporting
+# (pass ``None``). ``(client, routine, run_id, device_id) -> StatusReporter``.
+ReporterFactory = Callable[[httpx.AsyncClient, str, str, str], StatusReporter]
 
 
 def emit(event_type: str, data: dict[str, Any]) -> None:
@@ -101,8 +107,13 @@ async def run(
     params: dict[str, Any],
     device_id: str,
     client_factory: ClientFactory = _build_client,
+    reporter_factory: ReporterFactory | None = StatusReporter,
 ) -> int:
     """Build and run the selected routine, emitting lifecycle events.
+
+    Lifecycle events are always written to stdout as NDJSON. Once the routine
+    is selected and the device client exists, they are *also* forwarded to
+    nomothetic (best-effort) so its status/log endpoints reflect this run.
 
     Parameters
     ----------
@@ -119,6 +130,10 @@ async def run(
     client_factory : callable, optional
         ``(device_url, token) -> httpx.AsyncClient``. Injectable for testing;
         defaults to the ADR-002 client builder.
+    reporter_factory : callable or None, optional
+        ``(client, routine, run_id, device_id) -> StatusReporter`` used to
+        forward events to nomothetic. Pass ``None`` to disable forwarding
+        (stdout NDJSON is unaffected). Defaults to :class:`StatusReporter`.
 
     Returns
     -------
@@ -133,18 +148,27 @@ async def run(
         emit("error", {"message": str(exc)})
         return 1
 
+    run_id = uuid.uuid4().hex
     client = client_factory(device_url, auth)
+    reporter = reporter_factory(client, name, run_id, device_id) if reporter_factory else None
+
+    async def report(event_type: str, data: dict[str, Any]) -> None:
+        """Emit to stdout (source of truth) and forward to nomothetic."""
+        emit(event_type, data)
+        if reporter is not None:
+            await reporter.report(event_type, data)
+
     try:
         pipeline: Pipeline = factory(client, device_id, params)
-        emit("running", {"routine": name, "device_id": device_id})
+        await report("running", {"routine": name, "device_id": device_id, "run_id": run_id})
         await pipeline.run()
-        emit("stopping", {"reason": "pipeline_completed"})
+        await report("stopping", {"reason": "pipeline_completed"})
         return 0
     except asyncio.CancelledError:
-        emit("stopping", {"reason": "cancelled"})
+        await report("stopping", {"reason": "cancelled"})
         raise
     except Exception as exc:  # noqa: BLE001 — top-level guard: report, never crash silently
-        emit("error", {"message": str(exc)})
+        await report("error", {"message": str(exc)})
         return 1
     finally:
         await client.aclose()

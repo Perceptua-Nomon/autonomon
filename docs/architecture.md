@@ -170,12 +170,22 @@ tracked in the roadmap):
   planner always has an initial state, then delta-based on change.
 - **`AvoidancePlanner`** (`planning.avoidance`) — two rules: obstacle/cliff →
   stop + reverse + steer; otherwise cruise forward. Debounces on the selected
-  strategy, emitting a new `ActionPlan` only when it changes.
+  strategy, emitting a new `ActionPlan` only when it changes. Once triggered, an
+  avoid maneuver is **held for `avoid_duration_s`** before re-evaluating, so the
+  robot commits to backing up and turning rather than darting forward the instant
+  the front sensor clears (`explore` defaults this to 2.5 s; the layer default is
+  0.0 = re-evaluate immediately).
 - **`VehicleAction`** (`action.vehicle`) — executes plan actions in priority
   order, mapping `drive`/`steer`/`stop` to `POST /api/drive`, `/api/steer`,
   `/api/hat/motor/stop`. Injected httpx client per ADR-002; emits an
   `ActionResult` per action (best-effort onto an optional telemetry queue — the
   Phase 7 seam); transient HTTP/timeout errors are recorded, not fatal.
+  **Renews the actuator lease**: `drive`/`steer` carry a TTL (`ttl_ms`) and
+  nomopractic's watchdog idles any motor/servo whose lease lapses. Because the
+  world model and planner are edge-triggered, no new plan arrives in steady
+  state, so this layer re-issues the held plan every `renew_interval_s`
+  (default: half the TTL) to keep the robot moving until the plan changes.
+  Renewal stops when the routine stops, so the watchdog's safety stop is intact.
 
 The full loop is exercised without hardware by
 `tests/test_pipeline_integration.py`: a near ultrasonic reading propagates

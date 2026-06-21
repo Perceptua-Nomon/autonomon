@@ -175,6 +175,73 @@ async def test_request_error_recorded() -> None:
 
 
 @pytest.mark.asyncio
+async def test_idle_plan_is_reissued_to_renew_lease() -> None:
+    """With no new plan, the held plan is re-issued so the actuator lease never lapses."""
+    client = _mock_client()
+    results: asyncio.Queue = asyncio.Queue()
+    # Short renew interval so the test doesn't wait on the real default (250 ms).
+    action = VehicleAction(
+        client, device_id="nomon-test", ttl_ms=500, results=results, renew_interval_s=0.02
+    )
+    q_in: asyncio.Queue = asyncio.Queue()
+    task = asyncio.create_task(action.run(q_in))
+    await q_in.put(_plan([{"method": "drive", "params": {"speed_pct": 30}, "priority": 0}]))
+
+    # First execution + at least one renewal => the same command POSTed more than once.
+    for _ in range(100):
+        if client.post.await_count >= 2:
+            break
+        await asyncio.sleep(0.01)
+    await action.stop()
+    await task
+
+    assert client.post.await_count >= 2
+    assert all(c.args[0] == "/api/drive" for c in client.post.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_renewal_tracks_latest_plan() -> None:
+    """A newly arrived plan supersedes the one being renewed."""
+    client = _mock_client()
+    results: asyncio.Queue = asyncio.Queue()
+    action = VehicleAction(
+        client, device_id="nomon-test", ttl_ms=500, results=results, renew_interval_s=0.02
+    )
+    q_in: asyncio.Queue = asyncio.Queue()
+    task = asyncio.create_task(action.run(q_in))
+
+    await q_in.put(_plan([{"method": "drive", "params": {"speed_pct": 30}, "priority": 0}], "p1"))
+    await asyncio.sleep(0.05)  # let the drive plan execute and renew at least once
+    await q_in.put(_plan([{"method": "stop", "params": {}, "priority": 0}], "p2"))
+
+    # Wait until the new (stop) plan has itself been renewed at least once.
+    for _ in range(100):
+        stops = sum(1 for c in client.post.await_args_list if c.args[0] == "/api/hat/motor/stop")
+        if stops >= 2:
+            break
+        await asyncio.sleep(0.01)
+    await action.stop()
+    await task
+
+    endpoints = [c.args[0] for c in client.post.await_args_list]
+    assert "/api/drive" in endpoints  # the first plan ran
+    assert endpoints.count("/api/hat/motor/stop") >= 2  # the latest plan is what now renews
+
+
+@pytest.mark.asyncio
+async def test_no_renewal_before_first_plan() -> None:
+    """Idle ticks before any plan arrives must not POST anything."""
+    client = _mock_client()
+    action = VehicleAction(client, device_id="nomon-test", renew_interval_s=0.01)
+    q_in: asyncio.Queue = asyncio.Queue()
+    task = asyncio.create_task(action.run(q_in))
+    await asyncio.sleep(0.05)  # several idle timeouts elapse with an empty queue
+    await action.stop()
+    await task
+    client.post.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_results_queue_optional() -> None:
     """Without a results queue, execution still works (results are logged only)."""
     client = _mock_client()

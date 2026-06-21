@@ -33,6 +33,11 @@ class AvoidancePlanner(PlannerBase):
     only when the selected strategy changes (debounce), so the action layer is
     not re-commanded every world-state tick.
 
+    Once selected, an **avoid** maneuver is held for ``avoid_duration_s`` before
+    the planner re-evaluates: the robot commits to backing up and turning
+    instead of darting forward again the instant the front sensor clears (which
+    otherwise produces a brief, jittery twitch near obstacles).
+
     Parameters
     ----------
     device_id : str
@@ -43,6 +48,12 @@ class AvoidancePlanner(PlannerBase):
         Drive speed (negative, -100–0) used when backing away from an obstacle.
     turn_angle_deg : float
         Steering angle (0–180, 90 = straight) used to turn away when avoiding.
+    avoid_duration_s : float
+        Minimum seconds to commit to an avoid maneuver (keep backing up and
+        turning) once triggered, even if the obstacle clears meanwhile. ``0.0``
+        (the default) re-evaluates on every world update, releasing to cruise as
+        soon as the path reads clear. A larger value yields a longer, less
+        twitchy back-up-and-turn before forward motion resumes.
     """
 
     def __init__(
@@ -51,12 +62,16 @@ class AvoidancePlanner(PlannerBase):
         forward_speed_pct: float = 30.0,
         reverse_speed_pct: float = -30.0,
         turn_angle_deg: float = 135.0,
+        avoid_duration_s: float = 0.0,
     ) -> None:
         self._device_id = device_id
         self._forward_speed_pct = forward_speed_pct
         self._reverse_speed_pct = reverse_speed_pct
         self._turn_angle_deg = turn_angle_deg
+        self._avoid_duration_s = avoid_duration_s
         self._last_kind: str | None = None
+        self._last_state: dict[str, Any] | None = None
+        self._avoid_until: float | None = None
         self._plan_counter = 0
         self._stop = asyncio.Event()
 
@@ -70,17 +85,45 @@ class AvoidancePlanner(PlannerBase):
         queue_out : asyncio.Queue
             Receives ``ActionPlan.to_dict()`` items, emitted only when the
             selected strategy changes.
+
+        An active avoid maneuver is also re-checked while the queue is idle, so
+        the planner can release back to cruise when ``avoid_duration_s`` elapses
+        without waiting for a new world update.
         """
+        loop = asyncio.get_running_loop()
         while not self._stop.is_set():
             try:
                 msg = await asyncio.wait_for(queue_in.get(), timeout=_QUEUE_GET_TIMEOUT_S)
             except asyncio.TimeoutError:
-                continue
-            update = WorldStateUpdate.from_dict(msg)
-            kind, actions = self._select(update.state)
-            if kind != self._last_kind:
-                self._last_kind = kind
-                await queue_out.put(self._build_plan(kind, actions).to_dict())
+                msg = None
+            if msg is not None:
+                self._last_state = WorldStateUpdate.from_dict(msg).state
+            await self._tick(queue_out, loop.time())
+
+    async def _tick(self, queue_out: asyncio.Queue, now: float) -> None:  # type: ignore[type-arg]
+        """Select a strategy for the latest state and emit it on change.
+
+        While an avoid maneuver is still within its committed ``avoid_duration_s``
+        window, re-evaluation is suppressed so the robot keeps backing up and
+        turning even if the obstacle has already cleared.
+
+        Parameters
+        ----------
+        queue_out : asyncio.Queue
+            Receives ``ActionPlan.to_dict()`` items on strategy change.
+        now : float
+            Current event-loop monotonic time (``loop.time()``).
+        """
+        state = self._last_state
+        if state is None:
+            return
+        if self._avoid_until is not None and now < self._avoid_until:
+            return
+        kind, actions = self._select(state)
+        self._avoid_until = now + self._avoid_duration_s if kind == _KIND_AVOID else None
+        if kind != self._last_kind:
+            self._last_kind = kind
+            await queue_out.put(self._build_plan(kind, actions).to_dict())
 
     def _select(self, state: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
         """Return the (kind, actions) for the current world state."""

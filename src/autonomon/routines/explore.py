@@ -22,6 +22,16 @@ from autonomon.pipeline import Pipeline
 from autonomon.planning.avoidance import AvoidancePlanner
 from autonomon.world_model.obstacle import ObstacleWorldModel
 
+# Routine-level defaults for the behaviours an operator most often tunes. These
+# are the *effective* defaults applied by build_explore() when the param is
+# absent; they intentionally override the underlying layer constructor defaults
+# to give a wider trigger margin, faster cruising, and a committed (non-twitchy)
+# avoid maneuver suited to open-floor exploration.
+_DEFAULT_OBSTACLE_THRESHOLD_CM = 40.0
+_DEFAULT_FORWARD_SPEED_PCT = 60.0
+_DEFAULT_REVERSE_SPEED_PCT = -60.0
+_DEFAULT_AVOID_DURATION_S = 2.5
+
 # Parameter schema for the ``explore`` routine. Declared here so the plugin
 # manifest can advertise it (see ``autonomon.routines.__init__``); applying the
 # params onto layer constructor args is this factory's job (ADR-003 D3).
@@ -29,22 +39,31 @@ EXPLORE_PARAMS_SCHEMA: dict[str, dict[str, Any]] = {
     "obstacle_threshold_cm": {
         "type": "number",
         "description": "Distance (cm) at or below which an obstacle is detected.",
-        "default": 20.0,
+        "default": _DEFAULT_OBSTACLE_THRESHOLD_CM,
     },
     "forward_speed_pct": {
         "type": "number",
         "description": "Cruise drive speed (0–100) when the path is clear.",
-        "default": 30.0,
+        "default": _DEFAULT_FORWARD_SPEED_PCT,
     },
     "turn_angle_deg": {
         "type": "number",
         "description": "Steering angle (0–180, 90 = straight) used to turn away when avoiding.",
         "default": 135.0,
     },
+    "avoid_duration_s": {
+        "type": "number",
+        "description": (
+            "Seconds to commit to a back-up-and-turn maneuver once an obstacle or "
+            "cliff is detected, before re-checking the path. Larger values give a "
+            "longer, less twitchy avoidance."
+        ),
+        "default": _DEFAULT_AVOID_DURATION_S,
+    },
     "reverse_speed_pct": {
         "type": "number",
         "description": "Drive speed (negative, -100–0) used when backing away from an obstacle.",
-        "default": -30.0,
+        "default": _DEFAULT_REVERSE_SPEED_PCT,
     },
     "cliff_threshold": {
         "type": "number",
@@ -84,11 +103,20 @@ def build_explore(
         each falling back to the underlying layer default when absent:
 
         ``obstacle_threshold_cm`` : float
-            Forwarded to :class:`ObstacleWorldModel`.
+            Forwarded to :class:`ObstacleWorldModel`. Defaults to
+            ``40.0`` cm for this routine when absent.
         ``forward_speed_pct`` : float
-            Forwarded to :class:`AvoidancePlanner`.
+            Forwarded to :class:`AvoidancePlanner`. Cruise speed; defaults to
+            ``60.0`` for this routine when absent.
+        ``reverse_speed_pct`` : float
+            Forwarded to :class:`AvoidancePlanner`. Speed used when backing away;
+            defaults to ``-60.0`` for this routine when absent.
         ``turn_angle_deg`` : float
             Forwarded to :class:`AvoidancePlanner`.
+        ``avoid_duration_s`` : float
+            Forwarded to :class:`AvoidancePlanner`. Seconds the back-up-and-turn
+            maneuver is held before re-checking the path. Defaults to ``2.5`` s
+            for this routine when absent.
         ``cliff_threshold`` : float
             Forwarded to :class:`ObstacleWorldModel` (only meaningful when cliff
             detection is enabled).
@@ -114,18 +142,28 @@ def build_explore(
         perception = ultrasonic
 
     world_model_kwargs: dict[str, Any] = {"device_id": device_id}
-    if "obstacle_threshold_cm" in params:
-        world_model_kwargs["obstacle_threshold_cm"] = params["obstacle_threshold_cm"]
+    # Applied unconditionally so the routine's wider default trigger margin takes
+    # effect when the param is absent (it overrides the layer constructor default).
+    world_model_kwargs["obstacle_threshold_cm"] = params.get(
+        "obstacle_threshold_cm", _DEFAULT_OBSTACLE_THRESHOLD_CM
+    )
     if "cliff_threshold" in params:
         world_model_kwargs["cliff_threshold"] = params["cliff_threshold"]
 
     planner_kwargs: dict[str, Any] = {"device_id": device_id}
-    if "forward_speed_pct" in params:
-        planner_kwargs["forward_speed_pct"] = params["forward_speed_pct"]
-    if "reverse_speed_pct" in params:
-        planner_kwargs["reverse_speed_pct"] = params["reverse_speed_pct"]
+    # Applied unconditionally so the routine's faster default drive speeds take
+    # effect when the params are absent (they override the layer defaults).
+    planner_kwargs["forward_speed_pct"] = params.get(
+        "forward_speed_pct", _DEFAULT_FORWARD_SPEED_PCT
+    )
+    planner_kwargs["reverse_speed_pct"] = params.get(
+        "reverse_speed_pct", _DEFAULT_REVERSE_SPEED_PCT
+    )
     if "turn_angle_deg" in params:
         planner_kwargs["turn_angle_deg"] = params["turn_angle_deg"]
+    # Applied unconditionally so the routine commits to a longer avoid maneuver
+    # by default (the planner's own default is 0.0 = re-evaluate immediately).
+    planner_kwargs["avoid_duration_s"] = params.get("avoid_duration_s", _DEFAULT_AVOID_DURATION_S)
 
     return Pipeline(
         perception=perception,
