@@ -91,6 +91,7 @@ def test_explore_params_map_to_layer_args() -> None:
         "cliff_threshold": 0.4,
         "forward_speed_pct": 55.0,
         "turn_angle_deg": 120.0,
+        "avoid_duration_s": 1.0,
     }
     pipeline = get_routine("explore")(_client(), "nomon-1", params)
 
@@ -100,15 +101,19 @@ def test_explore_params_map_to_layer_args() -> None:
     assert world_model._cliff_threshold == 0.4
     assert planner._forward_speed_pct == 55.0
     assert planner._turn_angle_deg == 120.0
+    assert planner._avoid_duration_s == 1.0
 
 
-def test_explore_uses_layer_defaults_when_params_absent() -> None:
+def test_explore_default_params_when_absent() -> None:
     pipeline = get_routine("explore")(_client(), "nomon-1", {})
     world_model = cast(ObstacleWorldModel, pipeline._slots["world_model"]._impl)  # type: ignore[union-attr]
     planner = cast(AvoidancePlanner, pipeline._slots["planner"]._impl)  # type: ignore[union-attr]
-    # Defaults from the layer constructors.
-    assert world_model._obstacle_threshold_cm == 20.0
-    assert planner._forward_speed_pct == 30.0
+    # Routine-level defaults (override the layer constructor defaults).
+    assert world_model._obstacle_threshold_cm == 40.0
+    assert planner._avoid_duration_s == 2.5
+    assert planner._forward_speed_pct == 60.0
+    assert planner._reverse_speed_pct == -60.0
+    # Unspecified params still fall back to the layer constructor defaults.
     assert planner._turn_angle_deg == 135.0
 
 

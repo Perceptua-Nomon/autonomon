@@ -106,6 +106,42 @@ async def test_first_clear_state_still_emits_initial_cruise() -> None:
 
 
 @pytest.mark.asyncio
+async def test_avoid_held_for_duration_suppresses_early_clear() -> None:
+    """An avoid maneuver commits for ``avoid_duration_s`` even if the path clears early."""
+    planner = AvoidancePlanner(device_id="nomon-test", avoid_duration_s=0.3)
+    q_in: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q_out: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    task = asyncio.create_task(planner.run(q_in, q_out))
+
+    await q_in.put(_state(obstacle_ahead=True))
+    first = await asyncio.wait_for(q_out.get(), timeout=1.0)
+    assert first["plan_id"].startswith("avoid-")
+
+    # Obstacle clears almost immediately — still inside the 0.3 s hold window.
+    await q_in.put(_state())
+    # No cruise plan must appear before the hold elapses.
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(q_out.get(), timeout=0.1)
+
+    # Once the hold elapses, the planner releases to cruise on its own (the idle
+    # tick re-evaluates the retained state — no new world update is required).
+    second = await asyncio.wait_for(q_out.get(), timeout=1.0)
+    assert second["plan_id"].startswith("cruise-")
+
+    await planner.stop()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_zero_duration_releases_immediately_on_clear() -> None:
+    """The default (0.0) hold preserves the original immediate-release behavior."""
+    planner = AvoidancePlanner(device_id="nomon-test")  # avoid_duration_s defaults to 0.0
+    plans = await _run_states(planner, [_state(obstacle_ahead=True), _state()])
+    kinds = [p["plan_id"].rsplit("-", 1)[0] for p in plans]
+    assert kinds == ["avoid", "cruise"]
+
+
+@pytest.mark.asyncio
 async def test_custom_speeds_and_angle() -> None:
     planner = AvoidancePlanner(
         device_id="nomon-test",

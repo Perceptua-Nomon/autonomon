@@ -16,6 +16,12 @@ logger = logging.getLogger(__name__)
 
 _QUEUE_GET_TIMEOUT_S = 0.05
 
+# Fraction of the lease TTL at which an idle plan is re-issued to keep the
+# nomopractic motor/servo lease alive (see VehicleAction's lease-renewal note).
+# Half the TTL leaves comfortable margin for request latency and the watchdog's
+# poll granularity.
+_RENEW_FRACTION = 0.5
+
 # Action method -> nomothetic endpoint. Methods absent here are "unknown".
 _ENDPOINTS = {
     "drive": "/api/drive",
@@ -46,6 +52,18 @@ class VehicleAction(ActionBase):
     telemetry); otherwise results are logged only. Transient HTTP failures are
     recorded on the ``ActionResult`` and do not stop the layer.
 
+    **Lease renewal.** ``drive`` and ``steer`` commands carry a TTL (``ttl_ms``):
+    nomopractic runs a watchdog that idles any motor and zeroes any steering
+    servo whose lease elapses without a refresh — a safety stop for a crashed
+    controller. The upstream layers are edge-triggered (the world model emits
+    only on change; the planner debounces on strategy), so in steady state — for
+    example cruising across an open floor — no new plan arrives, the lease
+    expires, and the robot stalls until the world *changes*. To keep moving, this
+    layer re-issues the most recent plan whenever no new one has arrived within
+    ``renew_interval_s``, renewing the lease. When the routine stops or the
+    process dies, renewal stops too and the watchdog halts the robot, so the
+    safety property is preserved.
+
     Parameters
     ----------
     client : httpx.AsyncClient
@@ -58,6 +76,11 @@ class VehicleAction(ActionBase):
         Per-request wall-clock timeout. Default 2.0 s.
     results : asyncio.Queue or None
         Optional sink for ``ActionResult.to_dict()`` items (Phase 7 telemetry).
+    renew_interval_s : float or None
+        Seconds of idle (no new plan) after which the current plan is re-issued
+        to keep the actuator lease alive. Defaults to half of ``ttl_ms`` (e.g.
+        0.25 s for the 500 ms default), comfortably inside the TTL. Must be
+        shorter than ``ttl_ms / 1000`` to be effective.
     """
 
     def __init__(
@@ -67,28 +90,65 @@ class VehicleAction(ActionBase):
         ttl_ms: int = 500,
         timeout_s: float = 2.0,
         results: asyncio.Queue | None = None,  # type: ignore[type-arg]
+        renew_interval_s: float | None = None,
     ) -> None:
         self._client = client
         self._device_id = device_id
         self._ttl_ms = ttl_ms
         self._timeout_s = timeout_s
         self._results = results
+        self._renew_interval_s = (
+            renew_interval_s
+            if renew_interval_s is not None
+            else (ttl_ms / 1000.0) * _RENEW_FRACTION
+        )
+        self._last_plan: ActionPlan | None = None
+        self._last_command_monotonic = 0.0
         self._stop = asyncio.Event()
 
     async def run(self, queue_in: asyncio.Queue) -> None:  # type: ignore[type-arg]
-        """Execute incoming ActionPlans until stopped.
+        """Execute incoming ActionPlans until stopped, renewing leases while idle.
+
+        A new plan is executed and retained. While no new plan arrives, the
+        retained plan is re-issued every ``renew_interval_s`` to keep the
+        actuator lease alive (see the class docstring's lease-renewal note);
+        without this the robot stalls between world-state changes.
 
         Parameters
         ----------
         queue_in : asyncio.Queue
             Source of ``ActionPlan.to_dict()`` items.
         """
+        loop = asyncio.get_running_loop()
         while not self._stop.is_set():
             try:
                 msg = await asyncio.wait_for(queue_in.get(), timeout=_QUEUE_GET_TIMEOUT_S)
             except asyncio.TimeoutError:
+                await self._renew_if_due(loop.time())
                 continue
-            await self._execute(ActionPlan.from_dict(msg))
+            self._last_plan = ActionPlan.from_dict(msg)
+            await self._execute(self._last_plan)
+            self._last_command_monotonic = loop.time()
+
+    async def _renew_if_due(self, now: float) -> None:
+        """Re-issue the current plan if its lease is due for renewal.
+
+        Re-issuing the whole plan renews every lease it set (drive and steer). An
+        ``avoid`` plan's leading ``stop`` is harmless on re-issue: the reverse
+        ``drive`` that follows in the same plan immediately re-establishes the
+        motor lease.
+
+        Parameters
+        ----------
+        now : float
+            Current event-loop monotonic time (``loop.time()``).
+        """
+        if self._last_plan is None:
+            return
+        if now - self._last_command_monotonic < self._renew_interval_s:
+            return
+        await self._execute(self._last_plan)
+        self._last_command_monotonic = now
 
     async def _execute(self, plan: ActionPlan) -> None:
         for action in sorted(plan.actions, key=lambda a: a.get("priority", 0)):
