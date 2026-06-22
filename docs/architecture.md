@@ -380,7 +380,7 @@ Each plugin in the autonomon repo follows this pattern:
 3. **`cli.py`**: reads `NOMON_DEVICE_URL`, `NOMON_PLUGIN_TOKEN`, `NOMON_PLUGIN_PARAMS` from env; emits NDJSON lifecycle events to stdout; runs the pipeline
 4. **`control.py`** (or layer submodules): implements the `autonomon` base classes
 
-The `nomothetic` `AutonomyPluginManager` discovers installed plugins via `nomon_manifest`, launches them as subprocesses, and reads their stdout NDJSON for lifecycle telemetry.
+At deploy time autonomon publishes its catalogue (the `nomon_manifest` plus its own venv's `nomon-autonomon` path) to a shared file (`NOMON_ROUTINE_CATALOG_PATH`); `nomothetic` reads that file to list routines and to launch the `nomon-autonomon` CLI as a subprocess, then reads its stdout NDJSON for lifecycle telemetry. The two projects keep separate venvs and never import each other (ADR-005).
 
 ### Lifecycle Events (stdout NDJSON)
 
@@ -485,8 +485,9 @@ behaviour:
 2. It emits the same NDJSON lifecycle events (`starting` / `running` /
    `stopping` / `error`) documented under **Plugin System** above.
 3. The plugin's `nomon_manifest` advertises the available routine names and the
-   union of their param schemas, so `AutonomyPluginManager` discovers the whole
-   catalogue from a single manifest rather than N packages.
+   union of their param schemas; autonomon publishes it to a shared file at
+   deploy time so `nomothetic` reads the whole catalogue from one file rather
+   than importing autonomon or scanning N packages (ADR-005).
 
 ### Reusable vs net-new per routine
 

@@ -90,7 +90,7 @@ Implemented via `FanInSlot` in `autonomon.fan_in`. `add_impl()` / `remove_impl()
 Each plugin package exposes:
 - `nomon_manifest` in `__init__.py` — name, version, required capabilities, params schema
 - CLI entry point `nomon-<name>` — reads `NOMON_DEVICE_URL`, `NOMON_PLUGIN_TOKEN`, `NOMON_PLUGIN_PARAMS` from env; emits NDJSON lifecycle events to stdout
-- `nomothetic` `AutonomyPluginManager` discovers plugins via `nomon_manifest` and launches them as subprocesses
+- At deploy time autonomon publishes its catalogue (the `nomon_manifest` plus its own venv's `nomon-autonomon` path) to a shared file (`NOMON_ROUTINE_CATALOG_PATH`, default `/var/lib/nomon/routine_catalog.json`); `nomothetic` reads that file to list and launch routines. The two projects keep **separate venvs and never import each other** — see `docs/adr/005-file-based-catalog-handoff.md`
 
 ## Coding Conventions
 

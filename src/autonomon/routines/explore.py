@@ -31,6 +31,11 @@ _DEFAULT_OBSTACLE_THRESHOLD_CM = 40.0
 _DEFAULT_FORWARD_SPEED_PCT = 60.0
 _DEFAULT_REVERSE_SPEED_PCT = -60.0
 _DEFAULT_AVOID_DURATION_S = 2.5
+# Raw grayscale ADC threshold for a cliff: any channel at or below this is "no
+# surface" (an edge). On-robot measurement: floor reads ~400-900, a drop-off
+# reads ~30. 200 sits comfortably between them. A higher value is more sensitive
+# (treats more readings as a cliff); lower is more conservative.
+_DEFAULT_CLIFF_THRESHOLD = 200.0
 
 # Parameter schema for the ``explore`` routine. Declared here so the plugin
 # manifest can advertise it (see ``autonomon.routines.__init__``); applying the
@@ -68,18 +73,22 @@ EXPLORE_PARAMS_SCHEMA: dict[str, dict[str, Any]] = {
     "cliff_threshold": {
         "type": "number",
         "description": (
-            "Normalised grayscale value (0.0–1.0) at or below which a cliff edge is "
-            "detected. Only used when 'cliff_detection' is enabled."
+            "Raw grayscale ADC value at or below which a cliff edge is detected. A "
+            "reflective surface reads high (~400-900); a drop-off / no surface reads "
+            "low (~30). Higher is more sensitive. Only used when 'cliff_detection' is "
+            "enabled."
         ),
-        "default": 0.2,
+        "default": _DEFAULT_CLIFF_THRESHOLD,
     },
     "cliff_detection": {
         "type": "boolean",
         "description": (
             "Enable grayscale cliff detection. Adds a Perceptron.grayscale source via a "
-            "FanInSlot alongside the ultrasonic sensor."
+            "FanInSlot alongside the ultrasonic sensor so the robot backs away from edges "
+            "(and when lifted off the floor). Enabled by default; set false to drive on "
+            "the ultrasonic sensor alone."
         ),
-        "default": False,
+        "default": True,
     },
 }
 
@@ -119,11 +128,14 @@ def build_explore(
             for this routine when absent.
         ``cliff_threshold`` : float
             Forwarded to :class:`ObstacleWorldModel` (only meaningful when cliff
-            detection is enabled).
+            detection is enabled). Raw grayscale ADC value at or below which an
+            edge is detected; defaults to ``200`` (floor reads ~400-900, an edge
+            ~30).
         ``cliff_detection`` : bool
-            When truthy, a ``Perceptron.grayscale`` source is added beside the
-            ultrasonic source via a ``FanInSlot`` (PASS_THROUGH), enabling the
-            world model's cliff fusion.
+            When truthy (**the default**), a ``Perceptron.grayscale`` source is
+            added beside the ultrasonic source via a ``FanInSlot`` (PASS_THROUGH),
+            enabling the world model's cliff fusion. Set false to drive on the
+            ultrasonic sensor alone.
 
     Returns
     -------
@@ -132,7 +144,10 @@ def build_explore(
     """
     ultrasonic = Perceptron.ultrasonic(client, device_id)
     perception: Perceptron | FanInSlot
-    if params.get("cliff_detection"):
+    # Cliff detection is on by default: a wandering robot must back away from
+    # edges (and stop when lifted off the floor). Pass cliff_detection=False to
+    # run on the ultrasonic sensor alone.
+    if params.get("cliff_detection", True):
         perception = FanInSlot(
             "perception",
             [ultrasonic, Perceptron.grayscale(client, device_id)],
@@ -147,8 +162,10 @@ def build_explore(
     world_model_kwargs["obstacle_threshold_cm"] = params.get(
         "obstacle_threshold_cm", _DEFAULT_OBSTACLE_THRESHOLD_CM
     )
-    if "cliff_threshold" in params:
-        world_model_kwargs["cliff_threshold"] = params["cliff_threshold"]
+    # Applied unconditionally so the routine's more sensitive cliff default (0.3,
+    # vs the world model's firmware-matching 0.7) takes effect when the param is
+    # absent — edges read well below 0.7 in practice.
+    world_model_kwargs["cliff_threshold"] = params.get("cliff_threshold", _DEFAULT_CLIFF_THRESHOLD)
 
     planner_kwargs: dict[str, Any] = {"device_id": device_id}
     # Applied unconditionally so the routine's faster default drive speeds take

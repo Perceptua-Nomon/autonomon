@@ -69,11 +69,11 @@ async def test_ultrasonic_none_distance_when_out_of_range() -> None:
 
 
 @pytest.mark.asyncio
-async def test_grayscale_emits_normalized_channels() -> None:
+async def test_grayscale_emits_raw_values() -> None:
     client = _mock_client(
         {
             "channels": [0, 1, 2],
-            "normalized": [0.1, 0.5, 0.9],
+            "values": [485, 580, 30],
             "timestamp": "2026-01-01T00:00:00Z",
         }
     )
@@ -83,8 +83,8 @@ async def test_grayscale_emits_normalized_channels() -> None:
 
     assert event["sensor_type"] == "grayscale"
     assert event["data"]["channels"] == [0, 1, 2]
-    assert event["data"]["normalized"] == pytest.approx([0.1, 0.5, 0.9])
-    client.get.assert_called_with("/api/sensor/grayscale/normalized")
+    assert event["data"]["values"] == [485, 580, 30]
+    client.get.assert_called_with("/api/sensor/grayscale")
 
 
 @pytest.mark.asyncio
@@ -164,6 +164,15 @@ async def _hang() -> MagicMock:
     raise AssertionError("unreachable")
 
 
+async def _malformed_body() -> MagicMock:
+    """First poll: a 200 whose body lacks the key the interpreter expects.
+
+    The ultrasonic interpreter reads ``body["distance_cm"]``; a body without it
+    raises KeyError inside ``_poll``. The loop must absorb it and keep polling.
+    """
+    return _mock_response({"timestamp": "t"})
+
+
 def _fail_first_then(first_poll: Any, good_body: dict[str, Any]) -> Any:
     """Return a client.get side-effect: ``first_poll`` once, then ``good_body``."""
     good = _mock_response(good_body)
@@ -183,6 +192,7 @@ def _fail_first_then(first_poll: Any, good_body: dict[str, Any]) -> Any:
         pytest.param(_raise_connect_error, 1.0, id="request_error"),
         pytest.param(_raise_http_status, 1.0, id="http_error"),
         pytest.param(_hang, 0.05, id="timeout"),
+        pytest.param(_malformed_body, 1.0, id="malformed_body"),
     ],
 )
 async def test_transient_failure_does_not_stop_loop(first_poll: Any, timeout_s: float) -> None:

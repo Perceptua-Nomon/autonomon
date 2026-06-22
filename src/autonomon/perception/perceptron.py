@@ -39,8 +39,8 @@ _SENSOR_SPECS: dict[str, _SensorSpec] = {
         0.1,
     ),
     "grayscale": _SensorSpec(
-        "/api/sensor/grayscale/normalized",
-        lambda body: {"channels": body["channels"], "normalized": body["normalized"]},
+        "/api/sensor/grayscale",
+        lambda body: {"channels": body["channels"], "values": body["values"]},
         0.1,
     ),
     "battery": _SensorSpec(
@@ -159,11 +159,15 @@ class Perceptron(PerceptionBase):
         poll_interval_s: float | None = None,
         timeout_s: float = 1.0,
     ) -> Perceptron:
-        """Return a Perceptron configured for the normalised grayscale sensors.
+        """Return a Perceptron configured for the raw grayscale ADC sensors.
 
-        Polls ``/api/sensor/grayscale/normalized`` (every 0.1 s by default);
-        emits ``data={"channels": [0, 1, 2], "normalized": [float, float, float]}``.
-        Values are 0.0–1.0 (calibrated via the nomothetic calibration API).
+        Polls ``/api/sensor/grayscale`` (every 0.1 s by default); emits
+        ``data={"channels": [0, 1, 2], "values": [int, int, int]}`` — raw ADC
+        counts. On this hardware a reflective surface under the downward sensor
+        reads high (~400-900) and a drop-off / no surface reads low (~30), so a
+        cliff is a *low* reading (see :class:`ObstacleWorldModel`). Raw is used
+        rather than ``/api/sensor/grayscale/normalized`` because the normalisation
+        calibration assumes the opposite sensor polarity and compresses the signal.
         """
         return cls._from_spec("grayscale", client, device_id, poll_interval_s, timeout_s)
 
@@ -220,6 +224,10 @@ class Perceptron(PerceptionBase):
             logger.warning("%s poll request error: %s", self._sensor_type, exc)
         except httpx.HTTPStatusError as exc:
             logger.warning("%s poll HTTP %d", self._sensor_type, exc.response.status_code)
+        except (KeyError, ValueError, TypeError) as exc:
+            # Bad JSON (resp.json()) or a body missing the keys the interpreter
+            # expects: log and keep polling rather than letting the layer crash.
+            logger.warning("%s poll returned an unusable body: %s", self._sensor_type, exc)
 
     async def _interruptible_sleep(self, seconds: float) -> None:
         try:

@@ -35,10 +35,10 @@
 #   NOMON_SUDO_PASS        Optional sudo password for non-interactive sudo.
 #   NOMON_REMOTE_DIR       Absolute path to the autonomon repo on the Pi.
 #                          Defaults to ${HOME}/perceptua-nomon/autonomon.
-#   NOMON_NOMOTHETIC_DIR   Absolute path to the nomothetic repo on the Pi.
-#                          Defaults to ${HOME}/perceptua-nomon/nomothetic.
-#                          The autonomon package is installed into nomothetic's
-#                          .venv so that AutonomyPluginManager can discover it.
+#   NOMON_ROUTINE_CATALOG_PATH
+#                          Absolute path of the routine catalogue this script
+#                          publishes for nomothetic to read. Default (shared with
+#                          nomothetic/.env.device): /var/lib/nomon/routine_catalog.json.
 #
 # What the script does (release mode):
 #   1. Saves the current installed autonomon version for rollback.
@@ -46,13 +46,14 @@
 #   3. Creates a fresh venv and installs autonomon with uv sync.
 #   4. Optionally runs tests (uv run pytest).
 #   5. Verifies the nomon-autonomon CLI is installed and importable.
-#   6. Registers the plugin key with nomothetic and reloads its services.
+#   6. Publishes the routine catalogue (NOMON_ROUTINE_CATALOG_PATH) for nomothetic.
+#   7. Registers the plugin key with nomothetic and reloads its services.
 #
 # What the script does (--local mode):
 #   1. Reads the version from pyproject.toml.
 #   2. Syncs the local source tree to the Pi via rsync.
 #   3. Creates a fresh venv and installs autonomon in editable mode.
-#   4–6. Same as release mode.
+#   4–7. Same as release mode.
 #
 # Rollback:
 #   If any step fails (release mode), the script checks out the previous git
@@ -71,7 +72,7 @@ REPO_DIR="$(dirname "${SCRIPT_DIR}")"
 # ── Help ───────────────────────────────────────────────────────────────────────
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-    sed -n '2,57p' "$0" | sed 's/^# \?//'
+    sed -n '2,58p' "$0" | sed 's/^# \?//'
     exit 0
 fi
 
@@ -90,7 +91,7 @@ if [[ -f "${ENV_FILE}" ]]; then
         val="${val#\"}" ; val="${val%\"}"
         val="${val#\'}" ; val="${val%\'}"
         case "${key}" in
-            NOMON_PI_HOST|NOMON_SSH_KEY|NOMON_REMOTE_DIR|NOMON_NOMOTHETIC_DIR|NOMON_SUDO_PASS)
+            NOMON_PI_HOST|NOMON_SSH_KEY|NOMON_REMOTE_DIR|NOMON_ROUTINE_CATALOG_PATH|NOMON_SUDO_PASS)
                 export "${key}=${val}" ;;
         esac
     done < "${ENV_FILE}"
@@ -98,6 +99,10 @@ fi
 
 NOMON_SUDO_PASS="$(printf '%s' "${NOMON_SUDO_PASS:-}" | tr -d '\r\n')"
 _NOMON_SUDO_PASS_QUOTED="$(printf '%q' "${NOMON_SUDO_PASS}")"
+# Pass the catalogue path to the remote as an env var, not a positional arg: over
+# SSH, empty positionals (e.g. an unset VERSION) collapse and shift later args, so
+# an env var is the robust channel (same approach as NOMON_SKIP_TESTS below).
+_NOMON_ROUTINE_CATALOG_PATH_QUOTED="$(printf '%q' "${NOMON_ROUTINE_CATALOG_PATH:-}")"
 
 # ── Argument parsing ───────────────────────────────────────────────────────────
 
@@ -142,10 +147,11 @@ if [[ -n "${PI_HOST}" ]]; then
         SSH_OPTS+=(-i "${NOMON_SSH_KEY}")
     fi
     echo "==> Deploying autonomon${VERSION:+ ${VERSION}} → ${PI_HOST}"
-    RUN_CMD=(ssh "${SSH_OPTS[@]}" "${PI_HOST}" "NOMON_SKIP_TESTS=${SKIP_TESTS} NOMON_SUDO_PASS=${_NOMON_SUDO_PASS_QUOTED} bash -ls \"\$@\"" --)
+    RUN_CMD=(ssh "${SSH_OPTS[@]}" "${PI_HOST}" "NOMON_SKIP_TESTS=${SKIP_TESTS} NOMON_SUDO_PASS=${_NOMON_SUDO_PASS_QUOTED} NOMON_ROUTINE_CATALOG_PATH=${_NOMON_ROUTINE_CATALOG_PATH_QUOTED} bash -ls \"\$@\"" --)
 else
     echo "==> Deploying autonomon${VERSION:+ ${VERSION}} locally"
     export NOMON_SKIP_TESTS="${SKIP_TESTS}"
+    export NOMON_ROUTINE_CATALOG_PATH="${NOMON_ROUTINE_CATALOG_PATH:-}"
     RUN_CMD=(bash -ls --)
 fi
 
@@ -183,8 +189,7 @@ fi
 # ── Remote deploy script ───────────────────────────────────────────────────────
 # All steps below run on the Pi (remote or local) via a single shell session.
 
-"${RUN_CMD[@]}" "${VERSION}" "${DEPLOY_LOCAL}" \
-    "${NOMON_REMOTE_DIR:-}" "${NOMON_NOMOTHETIC_DIR:-}" << 'END_REMOTE'
+"${RUN_CMD[@]}" "${VERSION}" "${DEPLOY_LOCAL}" "${NOMON_REMOTE_DIR:-}" << 'END_REMOTE'
 set -euo pipefail
 
 if [[ -n "${NOMON_SUDO_PASS:-}" ]]; then
@@ -201,6 +206,7 @@ fi
 readonly REQUESTED_VERSION="$1"
 readonly DEPLOY_LOCAL="${2:-false}"
 readonly REMOTE_DIR="${3:-${HOME}/perceptua-nomon/autonomon}"
+readonly CATALOG_PATH="${NOMON_ROUTINE_CATALOG_PATH:-/var/lib/nomon/routine_catalog.json}"
 readonly SKIP_TESTS="${NOMON_SKIP_TESTS:-false}"
 
 if [[ ! -d "${REMOTE_DIR}" ]]; then
@@ -339,6 +345,23 @@ _manifest="$("${REMOTE_DIR}/.venv/bin/python" -c \
     'from autonomon.routines import nomon_manifest; print(nomon_manifest["name"], nomon_manifest["routines"])')"
 echo "  Manifest: ${_manifest} ✓"
 
+# ── Publish the routine catalogue for nomothetic ──────────────────────────────
+# Decoupling (ADR-005): nomothetic and autonomon run from separate venvs and never
+# import each other. autonomon publishes its catalogue — routine names, parameter
+# schemas, version, and the absolute path to *this* venv's nomon-autonomon CLI —
+# to a shared file that nomothetic reads to both list routines
+# (GET /api/routines/available) and launch them. Written under sudo because the
+# default location (/var/lib/nomon) is root-owned; made world-readable so the
+# nomothetic service user can read it.
+
+echo "==> Publishing routine catalogue to ${CATALOG_PATH}..."
+sudo mkdir -p "$(dirname "${CATALOG_PATH}")"
+sudo "${REMOTE_DIR}/.venv/bin/python" -m autonomon.routines.publish "${CATALOG_PATH}"
+sudo chmod 644 "${CATALOG_PATH}"
+_published="$("${REMOTE_DIR}/.venv/bin/python" -c \
+    'import json,sys; print(json.load(open(sys.argv[1]))["routines"])' "${CATALOG_PATH}")"
+echo "  Catalogue published (routines: ${_published}) ✓"
+
 # ── Plugin auth: key + env file (ADR-019) ─────────────────────────────────────
 # Generate an Ed25519 private key on-device (never leaves the Pi) and write the
 # plugin env file pointing at it. The public half is registered with nomothetic
@@ -387,12 +410,15 @@ sudo mv -f "${_tmp_env}" "${PLUGIN_ENV_FILE}"
 sudo chmod 644 "${PLUGIN_ENV_FILE}"
 echo "  Env file written ✓"
 
-# ── Reload nomothetic so plugin auth endpoints + discovery are fresh ──────────
+# ── Reload nomothetic to pick up the plugin key (catalogue is file-based) ───────
+# The routine catalogue is now published to a file (autonomon ADR-005) so nomothetic
+# does not need a restart to read it. The reload is only for plugin auth: the
+# newly-generated Ed25519 key must be registered with the freshly-started service.
 
 _NOMOTHETIC_RUNNING=false
 if command -v systemctl >/dev/null 2>&1; then
     if sudo systemctl is-active --quiet nomothetic-api.service 2>/dev/null; then
-        echo "==> Reloading nomothetic-api.service to pick up plugin changes..."
+        echo "==> Reloading nomothetic-api.service to pick up the plugin key..."
         sudo systemctl reload-or-restart nomothetic-api.service
         _NOMOTHETIC_RUNNING=true
         echo "  nomothetic-api reloaded ✓"
@@ -432,6 +458,7 @@ fi
 echo ""
 echo "✓ autonomon ${TARGET} deployed successfully to ${DEVICE_HOSTNAME}."
 echo "  Plugin env: ${PLUGIN_ENV_FILE}"
+echo "  Routine catalogue: ${CATALOG_PATH} (nomothetic reads this to list/launch routines)"
 echo "  Run a routine with:"
 echo "    set -a; . ${PLUGIN_ENV_FILE}; set +a; \\"
 echo "    NOMON_PLUGIN_PARAMS='{\"routine\":\"explore\"}' ${REMOTE_DIR}/.venv/bin/nomon-autonomon"

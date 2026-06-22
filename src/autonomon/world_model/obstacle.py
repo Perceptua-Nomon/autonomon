@@ -32,15 +32,20 @@ class ObstacleWorldModel(WorldModelBase):
         Distance at or below which ``obstacle_ahead`` becomes True. A ``None``
         ultrasonic reading (no echo / out of range) is treated as "clear".
     cliff_threshold : float
-        Normalised grayscale value (0.0–1.0) at or below which a channel is
-        considered a cliff edge. Ignored if no grayscale events arrive.
+        Raw grayscale ADC value at or **below** which a channel is considered a
+        cliff edge. On this hardware a reflective surface under the downward sensor
+        reads *high* (~400-900 ADC) and a drop-off / no surface reads *low* (~30),
+        so a cliff is a low reading. Defaults to ``200`` — comfortably between the
+        floor (~400+) and an edge (~30). This consumes the **raw** ADC counts
+        (``/api/sensor/grayscale``), not the normalised endpoint, whose calibration
+        assumes the opposite sensor polarity. Ignored if no grayscale events arrive.
     """
 
     def __init__(
         self,
         device_id: str,
         obstacle_threshold_cm: float = 20.0,
-        cliff_threshold: float = 0.2,
+        cliff_threshold: float = 200.0,
     ) -> None:
         self._device_id = device_id
         self._obstacle_threshold_cm = obstacle_threshold_cm
@@ -79,8 +84,11 @@ class ObstacleWorldModel(WorldModelBase):
             obstacle = distance is not None and distance <= self._obstacle_threshold_cm
             return self._set("obstacle_ahead", obstacle)
         if event.sensor_type == "grayscale":
-            normalized = event.data.get("normalized") or []
-            cliff = any(v is not None and v <= self._cliff_threshold for v in normalized)
+            values = event.data.get("values") or []
+            # Low raw reading = no reflective surface under the sensor = drop-off /
+            # edge. A cliff is therefore a LOW reading: any channel at or below the
+            # threshold (a reflective floor reads high, ~400-900; an edge ~30).
+            cliff = any(v is not None and v <= self._cliff_threshold for v in values)
             return self._set("cliff_detected", cliff)
         return {}
 

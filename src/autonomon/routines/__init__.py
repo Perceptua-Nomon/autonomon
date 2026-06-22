@@ -3,8 +3,10 @@
 A *routine* is a named, built-in behaviour that composes the four autonomy
 layers into a single :class:`~autonomon.pipeline.Pipeline`. This subpackage holds
 the registry (``ROUTINES`` / :func:`get_routine` / :func:`available_routines`),
-the built-in factories (``explore``), and the single plugin ``nomon_manifest``
-that advertises the whole catalogue to nomothetic's ``AutonomyPluginManager``.
+the built-in factories (``explore``), and the single ``nomon_manifest`` that
+autonomon publishes to a shared file (via :mod:`autonomon.routines.publish`) for
+nomothetic to read — the two run from separate venvs and never import each other
+(ADR-005).
 
 > An **autonomy routine** (this package) is deliberately distinct from
 > nomothetic's HAT-level ``start_routine`` IPC / ``POST /api/routine/start``,
@@ -39,11 +41,12 @@ def _union_params_schema() -> dict[str, dict[str, Any]]:
     return union
 
 
-# Single plugin manifest discovered by nomothetic's AutonomyPluginManager. One
-# manifest advertises all routines (ADR-003 D2), not one manifest per routine.
+# Single manifest advertising all routines (ADR-003 D2), not one per routine.
+# autonomon publishes it to a shared file for nomothetic to read (ADR-005);
+# nomothetic never imports autonomon.
 nomon_manifest: dict[str, object] = {
     "name": "autonomon",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "routines": available_routines(),
     "params_schema": _union_params_schema(),
 }

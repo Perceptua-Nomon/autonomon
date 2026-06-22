@@ -28,13 +28,22 @@ def _response(json_body: dict[str, Any]) -> MagicMock:
     return resp
 
 
-def _device_client(distance_cm: float) -> AsyncMock:
-    """Mock device: ultrasonic GET returns ``distance_cm``; all POSTs return 200."""
+def _device_client(distance_cm: float, gray_values: list[int] | None = None) -> AsyncMock:
+    """Mock device: ultrasonic + grayscale GETs return the given readings; POSTs 200.
+
+    ``gray_values`` are raw grayscale ADC counts; they default to a reflective floor
+    (``[500, 500, 500]``, no cliff) so obstacle/cruise tests exercise the ultrasonic
+    path alone. Cliff detection is on by default in the ``explore`` factory, so the
+    raw grayscale endpoint must return a well-formed body.
+    """
     client = AsyncMock(spec=httpx.AsyncClient)
+    gray = gray_values if gray_values is not None else [500, 500, 500]
 
     async def _get(path: str) -> MagicMock:
         if path == "/api/sensor/ultrasonic":
             return _response({"distance_cm": distance_cm, "timestamp": "t"})
+        if path == "/api/sensor/grayscale":
+            return _response({"channels": [0, 1, 2], "values": gray, "timestamp": "t"})
         return _response({"timestamp": "t"})
 
     client.get.side_effect = _get
@@ -88,6 +97,21 @@ async def test_near_obstacle_triggers_avoidance_commands() -> None:
     posted = [c.args[0] for c in client.post.await_args_list]
     assert "/api/hat/motor/stop" in posted
     assert "/api/drive" in posted
+
+
+@pytest.mark.asyncio
+async def test_cliff_triggers_avoidance_with_clear_path() -> None:
+    # The path ahead is clear (ultrasonic far), but a downward sensor reads low
+    # (30 ADC) — an edge / no surface. Cliff detection (on by default) must still
+    # command an avoidance stop. Regression guard for the sensor-polarity bug,
+    # where holding the robot over an edge (a LOW reading) produced no stop.
+    client = _device_client(distance_cm=200.0, gray_values=[500, 30, 500])
+    results: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+    await _run_until_first_result(_build_pipeline(client, results), results)
+
+    posted = [c.args[0] for c in client.post.await_args_list]
+    assert "/api/hat/motor/stop" in posted
 
 
 @pytest.mark.asyncio
