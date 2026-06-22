@@ -1,9 +1,12 @@
 """Tests for publishing the routine catalogue to a file (ADR-005)."""
 
 import json
+import sys
+import sysconfig
+from pathlib import Path
 
 from autonomon.routines import nomon_manifest
-from autonomon.routines.publish import build_catalog, main, publish
+from autonomon.routines.publish import _autonomon_bin, build_catalog, main, publish
 
 
 def test_build_catalog_includes_manifest_and_bin():
@@ -14,6 +17,21 @@ def test_build_catalog_includes_manifest_and_bin():
     # The CLI path nomothetic execs to launch a routine, resolved to this venv.
     assert catalog["autonomon_bin"].endswith("nomon-autonomon")
     assert catalog["published_at"]
+
+
+def test_autonomon_bin_in_venv_scripts_dir():
+    # Regression: the CLI path must come from the venv's scripts dir, not from
+    # Path(sys.executable).resolve(). A uv venv's bin/python is a symlink to the
+    # base interpreter, so resolving it escapes the venv (e.g. to /usr/bin) where
+    # the console script does not exist — the bad path that broke routine launch.
+    bin_path = Path(_autonomon_bin())
+    assert bin_path.name == "nomon-autonomon"
+    assert bin_path.parent == Path(sysconfig.get_path("scripts"))
+    # When the interpreter is a symlink (uv venvs are), the old resolved-parent
+    # location differs from the scripts dir — assert we are NOT using it.
+    resolved_parent = Path(sys.executable).resolve().parent
+    if resolved_parent != Path(sysconfig.get_path("scripts")):
+        assert bin_path.parent != resolved_parent
 
 
 def test_publish_writes_document_and_no_temp_left(tmp_path):

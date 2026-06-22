@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import sysconfig
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,15 +36,21 @@ def _autonomon_bin() -> str:
     """Return the absolute path to this venv's ``nomon-autonomon`` console script.
 
     This is how nomothetic launches a routine: it execs this binary (in autonomon's
-    own venv) as a subprocess. Resolved relative to the running interpreter so the
-    published path always points at the venv that published the catalogue.
+    own venv) as a subprocess. The path comes from this interpreter's *scripts*
+    directory (:func:`sysconfig.get_path`) — i.e. the venv's ``bin/`` — which is
+    exactly where ``uv``/pip install console scripts.
+
+    Do **not** derive this from ``Path(sys.executable).resolve()``: a ``uv``-created
+    venv's ``bin/python`` is a symlink to the base interpreter, so resolving it
+    escapes the venv (e.g. to ``/usr/bin``), where the console script does not
+    exist — which is exactly the bad path that breaks the launch.
 
     Returns
     -------
     str
-        Absolute path to the ``nomon-autonomon`` script beside ``sys.executable``.
+        Absolute path to the ``nomon-autonomon`` script in this venv's scripts dir.
     """
-    return str(Path(sys.executable).resolve().parent / "nomon-autonomon")
+    return str(Path(sysconfig.get_path("scripts")) / "nomon-autonomon")
 
 
 def build_catalog() -> dict[str, Any]:
