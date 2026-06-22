@@ -31,6 +31,10 @@ _DEFAULT_OBSTACLE_THRESHOLD_CM = 40.0
 _DEFAULT_FORWARD_SPEED_PCT = 60.0
 _DEFAULT_REVERSE_SPEED_PCT = -60.0
 _DEFAULT_AVOID_DURATION_S = 2.5
+# Lower than the world model's firmware-matching 0.7 default: tuned from on-robot
+# testing, where edges/lift-offs read well below 0.7 with the default grayscale
+# calibration, so a more sensitive trigger is needed to actually catch them.
+_DEFAULT_CLIFF_THRESHOLD = 0.3
 
 # Parameter schema for the ``explore`` routine. Declared here so the plugin
 # manifest can advertise it (see ``autonomon.routines.__init__``); applying the
@@ -70,9 +74,9 @@ EXPLORE_PARAMS_SCHEMA: dict[str, dict[str, Any]] = {
         "description": (
             "Normalised grayscale value (0.0–1.0) at or above which a cliff edge is "
             "detected (0.0 = reflective surface present, 1.0 = no surface / edge). "
-            "Only used when 'cliff_detection' is enabled."
+            "Lower is more sensitive. Only used when 'cliff_detection' is enabled."
         ),
-        "default": 0.7,
+        "default": _DEFAULT_CLIFF_THRESHOLD,
     },
     "cliff_detection": {
         "type": "boolean",
@@ -122,7 +126,8 @@ def build_explore(
             for this routine when absent.
         ``cliff_threshold`` : float
             Forwarded to :class:`ObstacleWorldModel` (only meaningful when cliff
-            detection is enabled).
+            detection is enabled). Defaults to ``0.3`` for this routine when absent
+            — more sensitive than the world model's firmware-matching ``0.7``.
         ``cliff_detection`` : bool
             When truthy (**the default**), a ``Perceptron.grayscale`` source is
             added beside the ultrasonic source via a ``FanInSlot`` (PASS_THROUGH),
@@ -154,8 +159,10 @@ def build_explore(
     world_model_kwargs["obstacle_threshold_cm"] = params.get(
         "obstacle_threshold_cm", _DEFAULT_OBSTACLE_THRESHOLD_CM
     )
-    if "cliff_threshold" in params:
-        world_model_kwargs["cliff_threshold"] = params["cliff_threshold"]
+    # Applied unconditionally so the routine's more sensitive cliff default (0.3,
+    # vs the world model's firmware-matching 0.7) takes effect when the param is
+    # absent — edges read well below 0.7 in practice.
+    world_model_kwargs["cliff_threshold"] = params.get("cliff_threshold", _DEFAULT_CLIFF_THRESHOLD)
 
     planner_kwargs: dict[str, Any] = {"device_id": device_id}
     # Applied unconditionally so the routine's faster default drive speeds take

@@ -134,8 +134,9 @@ def test_explore_default_params_when_absent() -> None:
     assert planner._reverse_speed_pct == -60.0
     # Unspecified params still fall back to the layer constructor defaults.
     assert planner._turn_angle_deg == 135.0
-    # Cliff threshold falls back to the world model's 0.7 default (matches firmware).
-    assert world_model._cliff_threshold == 0.7
+    # Cliff threshold uses the routine's more sensitive 0.3 default (overrides the
+    # world model's firmware-matching 0.7 layer default).
+    assert world_model._cliff_threshold == 0.3
 
 
 # ---------------------------------------------------------------------------
