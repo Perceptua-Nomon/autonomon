@@ -32,9 +32,9 @@ _DEFAULT_FORWARD_SPEED_PCT = 60.0
 _DEFAULT_REVERSE_SPEED_PCT = -60.0
 _DEFAULT_AVOID_DURATION_S = 2.5
 # Lower than the world model's firmware-matching 0.7 default: tuned from on-robot
-# testing, where edges/lift-offs read well below 0.7 with the default grayscale
-# calibration, so a more sensitive trigger is needed to actually catch them.
-_DEFAULT_CLIFF_THRESHOLD = 0.3
+# testing. Floor reads ~0.28, lifted/edge reads ~0.46 with default calibration.
+# Set threshold midway (0.35) to separate them with margin on both sides.
+_DEFAULT_CLIFF_THRESHOLD = 0.35
 
 # Parameter schema for the ``explore`` routine. Declared here so the plugin
 # manifest can advertise it (see ``autonomon.routines.__init__``); applying the
