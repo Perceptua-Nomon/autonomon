@@ -69,11 +69,11 @@ async def test_ultrasonic_none_distance_when_out_of_range() -> None:
 
 
 @pytest.mark.asyncio
-async def test_grayscale_emits_normalized_channels() -> None:
+async def test_grayscale_emits_raw_values() -> None:
     client = _mock_client(
         {
             "channels": [0, 1, 2],
-            "normalized": [0.1, 0.5, 0.9],
+            "values": [485, 580, 30],
             "timestamp": "2026-01-01T00:00:00Z",
         }
     )
@@ -83,8 +83,8 @@ async def test_grayscale_emits_normalized_channels() -> None:
 
     assert event["sensor_type"] == "grayscale"
     assert event["data"]["channels"] == [0, 1, 2]
-    assert event["data"]["normalized"] == pytest.approx([0.1, 0.5, 0.9])
-    client.get.assert_called_with("/api/sensor/grayscale/normalized")
+    assert event["data"]["values"] == [485, 580, 30]
+    client.get.assert_called_with("/api/sensor/grayscale")
 
 
 @pytest.mark.asyncio

@@ -31,10 +31,11 @@ _DEFAULT_OBSTACLE_THRESHOLD_CM = 40.0
 _DEFAULT_FORWARD_SPEED_PCT = 60.0
 _DEFAULT_REVERSE_SPEED_PCT = -60.0
 _DEFAULT_AVOID_DURATION_S = 2.5
-# Lower than the world model's firmware-matching 0.7 default: tuned from on-robot
-# testing. Floor reads ~0.28, lifted/edge reads ~0.46 with default calibration.
-# Set threshold midway (0.35) to separate them with margin on both sides.
-_DEFAULT_CLIFF_THRESHOLD = 0.35
+# Raw grayscale ADC threshold for a cliff: any channel at or below this is "no
+# surface" (an edge). On-robot measurement: floor reads ~400-900, a drop-off
+# reads ~30. 200 sits comfortably between them. A higher value is more sensitive
+# (treats more readings as a cliff); lower is more conservative.
+_DEFAULT_CLIFF_THRESHOLD = 200.0
 
 # Parameter schema for the ``explore`` routine. Declared here so the plugin
 # manifest can advertise it (see ``autonomon.routines.__init__``); applying the
@@ -72,9 +73,10 @@ EXPLORE_PARAMS_SCHEMA: dict[str, dict[str, Any]] = {
     "cliff_threshold": {
         "type": "number",
         "description": (
-            "Normalised grayscale value (0.0–1.0) at or above which a cliff edge is "
-            "detected (0.0 = reflective surface present, 1.0 = no surface / edge). "
-            "Lower is more sensitive. Only used when 'cliff_detection' is enabled."
+            "Raw grayscale ADC value at or below which a cliff edge is detected. A "
+            "reflective surface reads high (~400-900); a drop-off / no surface reads "
+            "low (~30). Higher is more sensitive. Only used when 'cliff_detection' is "
+            "enabled."
         ),
         "default": _DEFAULT_CLIFF_THRESHOLD,
     },
@@ -126,8 +128,9 @@ def build_explore(
             for this routine when absent.
         ``cliff_threshold`` : float
             Forwarded to :class:`ObstacleWorldModel` (only meaningful when cliff
-            detection is enabled). Defaults to ``0.3`` for this routine when absent
-            — more sensitive than the world model's firmware-matching ``0.7``.
+            detection is enabled). Raw grayscale ADC value at or below which an
+            edge is detected; defaults to ``200`` (floor reads ~400-900, an edge
+            ~30).
         ``cliff_detection`` : bool
             When truthy (**the default**), a ``Perceptron.grayscale`` source is
             added beside the ultrasonic source via a ``FanInSlot`` (PASS_THROUGH),

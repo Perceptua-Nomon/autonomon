@@ -107,7 +107,7 @@ def test_explore_cliff_detection_adds_grayscale_fanin() -> None:
 def test_explore_params_map_to_layer_args() -> None:
     params: dict[str, Any] = {
         "obstacle_threshold_cm": 12.5,
-        "cliff_threshold": 0.4,
+        "cliff_threshold": 150.0,
         "forward_speed_pct": 55.0,
         "turn_angle_deg": 120.0,
         "avoid_duration_s": 1.0,
@@ -117,7 +117,7 @@ def test_explore_params_map_to_layer_args() -> None:
     world_model = cast(ObstacleWorldModel, pipeline._slots["world_model"]._impl)  # type: ignore[union-attr]
     planner = cast(AvoidancePlanner, pipeline._slots["planner"]._impl)  # type: ignore[union-attr]
     assert world_model._obstacle_threshold_cm == 12.5
-    assert world_model._cliff_threshold == 0.4
+    assert world_model._cliff_threshold == 150.0
     assert planner._forward_speed_pct == 55.0
     assert planner._turn_angle_deg == 120.0
     assert planner._avoid_duration_s == 1.0
@@ -134,10 +134,9 @@ def test_explore_default_params_when_absent() -> None:
     assert planner._reverse_speed_pct == -60.0
     # Unspecified params still fall back to the layer constructor defaults.
     assert planner._turn_angle_deg == 135.0
-    # Cliff threshold uses the routine's tuned 0.35 default (overrides the
-    # world model's firmware-matching 0.7 layer default). Floor reads ~0.28,
-    # lifted ~0.46, so 0.35 is the midpoint.
-    assert world_model._cliff_threshold == 0.35
+    # Cliff threshold uses the routine's tuned 200 (raw ADC) default. Floor reads
+    # ~400-900, an edge ~30, so 200 separates them with margin.
+    assert world_model._cliff_threshold == 200.0
 
 
 # ---------------------------------------------------------------------------
