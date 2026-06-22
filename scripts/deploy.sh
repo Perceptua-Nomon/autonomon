@@ -410,12 +410,15 @@ sudo mv -f "${_tmp_env}" "${PLUGIN_ENV_FILE}"
 sudo chmod 644 "${PLUGIN_ENV_FILE}"
 echo "  Env file written ✓"
 
-# ── Reload nomothetic so plugin auth endpoints + discovery are fresh ──────────
+# ── Reload nomothetic to pick up the plugin key (catalogue is file-based) ───────
+# The routine catalogue is now published to a file (autonomon ADR-005) so nomothetic
+# does not need a restart to read it. The reload is only for plugin auth: the
+# newly-generated Ed25519 key must be registered with the freshly-started service.
 
 _NOMOTHETIC_RUNNING=false
 if command -v systemctl >/dev/null 2>&1; then
     if sudo systemctl is-active --quiet nomothetic-api.service 2>/dev/null; then
-        echo "==> Reloading nomothetic-api.service to pick up plugin changes..."
+        echo "==> Reloading nomothetic-api.service to pick up the plugin key..."
         sudo systemctl reload-or-restart nomothetic-api.service
         _NOMOTHETIC_RUNNING=true
         echo "  nomothetic-api reloaded ✓"
