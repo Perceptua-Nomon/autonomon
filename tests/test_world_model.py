@@ -113,8 +113,9 @@ async def test_state_snapshot_is_full_not_just_delta() -> None:
 
 @pytest.mark.asyncio
 async def test_grayscale_cliff_detection() -> None:
-    wm = ObstacleWorldModel(device_id="nomon-test", cliff_threshold=0.2)
-    updates = await _run_events(wm, [_grayscale([0.8, 0.1, 0.7])])
+    # High normalised reading = non-reflective = no surface = cliff (>= threshold).
+    wm = ObstacleWorldModel(device_id="nomon-test", cliff_threshold=0.7)
+    updates = await _run_events(wm, [_grayscale([0.2, 0.9, 0.3])])
 
     assert len(updates) == 1
     assert updates[0]["delta"] == {"cliff_detected": True}
@@ -122,11 +123,36 @@ async def test_grayscale_cliff_detection() -> None:
 
 
 @pytest.mark.asyncio
+async def test_grayscale_reflective_floor_is_not_cliff() -> None:
+    """Low normalised readings = a reflective surface is present = NOT a cliff.
+
+    Regression guard for the convention (nomopractic: 0.0 reflective, 1.0
+    non-reflective/edge). The pre-fix code triggered a cliff here, with the
+    comparison inverted.
+    """
+    wm = ObstacleWorldModel(device_id="nomon-test", cliff_threshold=0.7)
+    updates = await _run_events(wm, [_grayscale([0.05, 0.1, 0.2])])
+
+    assert len(updates) == 1
+    assert updates[0]["delta"] == {}  # baseline only; no cliff over a real floor
+    assert updates[0]["state"]["cliff_detected"] is False
+
+
+@pytest.mark.asyncio
+async def test_grayscale_default_threshold_trips_on_high_reading() -> None:
+    """With the default 0.7 threshold, a high (non-reflective) reading is a cliff."""
+    wm = ObstacleWorldModel(device_id="nomon-test")  # default cliff_threshold = 0.7
+    updates = await _run_events(wm, [_grayscale([0.1, 0.1, 0.85])])
+
+    assert updates[-1]["state"]["cliff_detected"] is True
+
+
+@pytest.mark.asyncio
 async def test_grayscale_none_channel_is_tolerated() -> None:
     """A None channel (dropped reading) must not crash the world model."""
-    wm = ObstacleWorldModel(device_id="nomon-test", cliff_threshold=0.2)
-    # 0.05 <= 0.2 -> cliff; the None element must be skipped, not raise TypeError.
-    updates = await _run_events(wm, [_grayscale([0.05, None, 0.7])])
+    wm = ObstacleWorldModel(device_id="nomon-test", cliff_threshold=0.7)
+    # 0.95 >= 0.7 -> cliff; the None element must be skipped, not raise TypeError.
+    updates = await _run_events(wm, [_grayscale([0.95, None, 0.3])])
 
     assert len(updates) == 1
     assert updates[0]["delta"] == {"cliff_detected": True}
@@ -134,7 +160,7 @@ async def test_grayscale_none_channel_is_tolerated() -> None:
 
 @pytest.mark.asyncio
 async def test_grayscale_all_none_is_clear_not_crash() -> None:
-    wm = ObstacleWorldModel(device_id="nomon-test", cliff_threshold=0.2)
+    wm = ObstacleWorldModel(device_id="nomon-test", cliff_threshold=0.7)
     updates = await _run_events(wm, [_grayscale([None, None, None])])
 
     # No numeric channel trips the threshold; baseline emit with no cliff.
@@ -144,8 +170,8 @@ async def test_grayscale_all_none_is_clear_not_crash() -> None:
 
 @pytest.mark.asyncio
 async def test_independent_obstacle_and_cliff_fields() -> None:
-    wm = ObstacleWorldModel(device_id="nomon-test", obstacle_threshold_cm=20.0, cliff_threshold=0.2)
-    updates = await _run_events(wm, [_ultrasonic(10.0), _grayscale([0.05, 0.9, 0.9])])
+    wm = ObstacleWorldModel(device_id="nomon-test", obstacle_threshold_cm=20.0, cliff_threshold=0.7)
+    updates = await _run_events(wm, [_ultrasonic(10.0), _grayscale([0.95, 0.1, 0.1])])
 
     assert len(updates) == 2
     assert updates[0]["delta"] == {"obstacle_ahead": True}

@@ -68,18 +68,21 @@ EXPLORE_PARAMS_SCHEMA: dict[str, dict[str, Any]] = {
     "cliff_threshold": {
         "type": "number",
         "description": (
-            "Normalised grayscale value (0.0–1.0) at or below which a cliff edge is "
-            "detected. Only used when 'cliff_detection' is enabled."
+            "Normalised grayscale value (0.0–1.0) at or above which a cliff edge is "
+            "detected (0.0 = reflective surface present, 1.0 = no surface / edge). "
+            "Only used when 'cliff_detection' is enabled."
         ),
-        "default": 0.2,
+        "default": 0.7,
     },
     "cliff_detection": {
         "type": "boolean",
         "description": (
             "Enable grayscale cliff detection. Adds a Perceptron.grayscale source via a "
-            "FanInSlot alongside the ultrasonic sensor."
+            "FanInSlot alongside the ultrasonic sensor so the robot backs away from edges "
+            "(and when lifted off the floor). Enabled by default; set false to drive on "
+            "the ultrasonic sensor alone."
         ),
-        "default": False,
+        "default": True,
     },
 }
 
@@ -121,9 +124,10 @@ def build_explore(
             Forwarded to :class:`ObstacleWorldModel` (only meaningful when cliff
             detection is enabled).
         ``cliff_detection`` : bool
-            When truthy, a ``Perceptron.grayscale`` source is added beside the
-            ultrasonic source via a ``FanInSlot`` (PASS_THROUGH), enabling the
-            world model's cliff fusion.
+            When truthy (**the default**), a ``Perceptron.grayscale`` source is
+            added beside the ultrasonic source via a ``FanInSlot`` (PASS_THROUGH),
+            enabling the world model's cliff fusion. Set false to drive on the
+            ultrasonic sensor alone.
 
     Returns
     -------
@@ -132,7 +136,10 @@ def build_explore(
     """
     ultrasonic = Perceptron.ultrasonic(client, device_id)
     perception: Perceptron | FanInSlot
-    if params.get("cliff_detection"):
+    # Cliff detection is on by default: a wandering robot must back away from
+    # edges (and stop when lifted off the floor). Pass cliff_detection=False to
+    # run on the ultrasonic sensor alone.
+    if params.get("cliff_detection", True):
         perception = FanInSlot(
             "perception",
             [ultrasonic, Perceptron.grayscale(client, device_id)],

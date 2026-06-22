@@ -32,15 +32,20 @@ class ObstacleWorldModel(WorldModelBase):
         Distance at or below which ``obstacle_ahead`` becomes True. A ``None``
         ultrasonic reading (no echo / out of range) is treated as "clear".
     cliff_threshold : float
-        Normalised grayscale value (0.0–1.0) at or below which a channel is
-        considered a cliff edge. Ignored if no grayscale events arrive.
+        Normalised grayscale value (0.0–1.0) at or **above** which a channel is
+        considered a cliff edge. nomopractic normalises ``0.0 = white/reflective``
+        (a surface is present under the downward sensor) and ``1.0 =
+        black/non-reflective`` (no surface — an edge, or the robot lifted off the
+        floor), so a *high* reading is the cliff. Defaults to ``0.7``, matching
+        nomopractic's firmware ``routine.cliff_threshold_normalized`` default.
+        Ignored if no grayscale events arrive.
     """
 
     def __init__(
         self,
         device_id: str,
         obstacle_threshold_cm: float = 20.0,
-        cliff_threshold: float = 0.2,
+        cliff_threshold: float = 0.7,
     ) -> None:
         self._device_id = device_id
         self._obstacle_threshold_cm = obstacle_threshold_cm
@@ -80,7 +85,9 @@ class ObstacleWorldModel(WorldModelBase):
             return self._set("obstacle_ahead", obstacle)
         if event.sensor_type == "grayscale":
             normalized = event.data.get("normalized") or []
-            cliff = any(v is not None and v <= self._cliff_threshold for v in normalized)
+            # High normalised reading = non-reflective = no surface under the
+            # sensor = cliff/edge (matches nomopractic's ``normalized >= threshold``).
+            cliff = any(v is not None and v >= self._cliff_threshold for v in normalized)
             return self._set("cliff_detected", cliff)
         return {}
 

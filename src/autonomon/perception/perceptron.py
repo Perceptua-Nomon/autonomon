@@ -220,6 +220,10 @@ class Perceptron(PerceptionBase):
             logger.warning("%s poll request error: %s", self._sensor_type, exc)
         except httpx.HTTPStatusError as exc:
             logger.warning("%s poll HTTP %d", self._sensor_type, exc.response.status_code)
+        except (KeyError, ValueError, TypeError) as exc:
+            # Bad JSON (resp.json()) or a body missing the keys the interpreter
+            # expects: log and keep polling rather than letting the layer crash.
+            logger.warning("%s poll returned an unusable body: %s", self._sensor_type, exc)
 
     async def _interruptible_sleep(self, seconds: float) -> None:
         try:

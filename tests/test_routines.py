@@ -64,7 +64,8 @@ def test_unknown_routine_error_is_keyerror() -> None:
 
 
 def test_explore_returns_wired_pipeline_with_four_slots() -> None:
-    pipeline = get_routine("explore")(_client(), "nomon-1", {})
+    # cliff_detection off → a single ultrasonic Perceptron at the perception slot.
+    pipeline = get_routine("explore")(_client(), "nomon-1", {"cliff_detection": False})
     assert isinstance(pipeline, Pipeline)
 
     slots = pipeline._slots
@@ -73,6 +74,24 @@ def test_explore_returns_wired_pipeline_with_four_slots() -> None:
     assert isinstance(slots["world_model"]._impl, ObstacleWorldModel)  # type: ignore[union-attr]
     assert isinstance(slots["planner"]._impl, AvoidancePlanner)  # type: ignore[union-attr]
     assert isinstance(slots["action"]._impl, VehicleAction)  # type: ignore[union-attr]
+
+
+def test_explore_enables_cliff_detection_by_default() -> None:
+    # With no params, cliff detection is on: perception is a fan-in of ultrasonic
+    # + grayscale so the robot avoids edges out of the box.
+    pipeline = get_routine("explore")(_client(), "nomon-1", {})
+    perception = pipeline._slots["perception"]
+    assert isinstance(perception, FanInSlot)
+    sensor_types = {impl._sensor_type for impl in perception._impls}  # type: ignore[union-attr]
+    assert sensor_types == {"ultrasonic", "grayscale"}
+
+
+def test_explore_cliff_detection_can_be_disabled() -> None:
+    pipeline = get_routine("explore")(_client(), "nomon-1", {"cliff_detection": False})
+    perception = pipeline._slots["perception"]
+    # No fan-in: just the single ultrasonic Perceptron.
+    assert isinstance(perception._impl, Perceptron)  # type: ignore[union-attr]
+    assert perception._impl._sensor_type == "ultrasonic"  # type: ignore[union-attr]
 
 
 def test_explore_cliff_detection_adds_grayscale_fanin() -> None:
@@ -115,6 +134,8 @@ def test_explore_default_params_when_absent() -> None:
     assert planner._reverse_speed_pct == -60.0
     # Unspecified params still fall back to the layer constructor defaults.
     assert planner._turn_angle_deg == 135.0
+    # Cliff threshold falls back to the world model's 0.7 default (matches firmware).
+    assert world_model._cliff_threshold == 0.7
 
 
 # ---------------------------------------------------------------------------
