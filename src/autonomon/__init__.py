@@ -26,7 +26,7 @@ from autonomon.world_model.base import WorldModelBase
 from autonomon.world_model.obstacle import ObstacleWorldModel
 from autonomon.world_model.target import TargetWorldModel
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     # Layer base classes
