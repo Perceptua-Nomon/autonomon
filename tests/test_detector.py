@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from autonomon import Detection, Detector, FakeDetector, OpenCvHogDetector, YoloOnnxDetector
+from autonomon import (
+    Detection,
+    Detector,
+    FakeDetector,
+    OpenCvDnnDetector,
+    OpenCvHogDetector,
+    YoloOnnxDetector,
+)
 
 
 def test_detection_fields() -> None:
@@ -79,3 +86,22 @@ def test_opencv_hog_returns_detection_list_for_a_valid_frame() -> None:
     assert isinstance(out, list)
     assert all(isinstance(d, Detection) for d in out)
     assert all(0.0 <= d.cx <= 1.0 and 0.0 <= d.cy <= 1.0 for d in out)
+
+
+# OpenCvDnnDetector -----------------------------------------------------------
+
+
+def test_opencv_dnn_constructs_lazily_without_deps() -> None:
+    # Construction loads no network and must not import opencv: it can be wired
+    # in the factory whether or not the model files or the extra are present.
+    det = OpenCvDnnDetector("/models/mnssd.caffemodel", "/models/deploy.prototxt")
+    assert isinstance(det, Detector)  # satisfies the runtime-checkable Protocol
+    assert det._net is None
+
+
+def test_opencv_dnn_without_model_paths_raises_clearly() -> None:
+    # _ensure_net reports a clear error before importing opencv, so this is
+    # deterministic whether or not the vision-opencv extra is installed.
+    det = OpenCvDnnDetector("", "")
+    with pytest.raises(RuntimeError, match="no vision model configured"):
+        det._ensure_net()

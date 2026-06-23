@@ -2,12 +2,19 @@
 
 A :class:`Detector` turns a raw JPEG frame into a list of :class:`Detection`
 boxes in **normalised** coordinates (all in ``[0, 1]``), so downstream layers need
-no image dimensions. Two implementations:
+no image dimensions. Implementations:
 
 * :class:`YoloOnnxDetector` — runs a YOLOv8n ONNX model via onnxruntime (person
   class only). Heavy deps (``onnxruntime``, ``numpy``, ``pillow`` — the ``vision``
   extra) are **lazy-imported** so importing this module never requires them; the
   detector raises a clear error only when first used without them.
+* :class:`OpenCvDnnDetector` — runs a MobileNet-SSD model via ``cv2.dnn`` (person
+  class only). Far more robust than HOG, still light: ``cv2.dnn`` ships in
+  ``opencv-python-headless`` (the ``vision-opencv`` extra), so only a small
+  ~23 MB model is needed, not the YOLO stack.
+* :class:`OpenCvHogDetector` — OpenCV's built-in HOG+SVM people detector. No model
+  file at all, but brittle (architectural edges fool it); kept for the lightest
+  possible bring-up.
 * :class:`FakeDetector` — returns scripted detections; used by tests/CI and by the
   ``NOMON_VISION_FAKE_DETECTIONS`` dev hook. No heavy deps.
 
@@ -325,6 +332,119 @@ class OpenCvHogDetector:
                     w=w / sw,
                     h=h / sh,
                     confidence=conf,
+                )
+            )
+        return detections
+
+
+class OpenCvDnnDetector:
+    """Person detector using OpenCV's DNN module with a MobileNet-SSD model.
+
+    Far more robust than :class:`OpenCvHogDetector` — it emits real learned
+    "person" confidences and does not fire on architectural edges — while staying
+    within OpenCV: ``cv2.dnn`` ships in ``opencv-python-headless`` (the
+    ``vision-opencv`` extra), so there is **no extra Python runtime dependency**;
+    only a small model (~23 MB Caffe MobileNet-SSD) is fetched at deploy time.
+    Much lighter than the YOLO/onnxruntime stack.
+
+    The network is loaded lazily on first :meth:`detect`, so constructing this
+    (e.g. in the ``follow-user`` factory) needs neither the model files nor OpenCV
+    present — only running it does.
+
+    Defaults target the classic chuanqi305 Caffe MobileNet-SSD (Pascal VOC, where
+    ``person`` is class 15), with the standard ``blobFromImage`` preprocessing
+    (scale ``1/127.5``, 300×300, mean ``127.5``, BGR).
+
+    Parameters
+    ----------
+    model_path : str
+        Path to the Caffe ``.caffemodel`` weights.
+    config_path : str
+        Path to the Caffe ``.prototxt`` network definition.
+    person_class_id : int
+        Class id treated as "person" for the model's label set. Default 15 (VOC).
+    input_size : int
+        Square network input edge in pixels. Default 300 (MobileNet-SSD).
+    scale : float
+        ``blobFromImage`` scale factor. Default ``1/127.5``.
+    mean : float
+        Per-channel mean subtracted by ``blobFromImage``. Default 127.5.
+    score_threshold : float
+        Minimum detection confidence kept. Default 0.5; the routine applies its
+        own ``confidence_threshold`` on top of this.
+    swap_rb : bool
+        Whether ``blobFromImage`` swaps R/B channels. Default False (Caffe is BGR).
+    """
+
+    PERSON_CLASS_ID = 15  # Pascal VOC "person"
+
+    def __init__(
+        self,
+        model_path: str,
+        config_path: str,
+        *,
+        person_class_id: int = PERSON_CLASS_ID,
+        input_size: int = 300,
+        scale: float = 1.0 / 127.5,
+        mean: float = 127.5,
+        score_threshold: float = 0.5,
+        swap_rb: bool = False,
+    ) -> None:
+        self._model_path = model_path
+        self._config_path = config_path
+        self._person_class_id = person_class_id
+        self._input_size = input_size
+        self._scale = scale
+        self._mean = mean
+        self._score_threshold = score_threshold
+        self._swap_rb = swap_rb
+        self._net: Any | None = None
+
+    def _ensure_net(self) -> None:
+        if self._net is not None:
+            return
+        if not self._model_path or not self._config_path:
+            raise RuntimeError(
+                "no vision model configured; set 'model_path'/'model_config' or "
+                "NOMON_VISION_MODEL_PATH/NOMON_VISION_MODEL_CONFIG"
+            )
+        cv2 = _require_cv2()
+        self._net = cv2.dnn.readNetFromCaffe(self._config_path, self._model_path)
+
+    def detect(self, frame_jpeg: bytes) -> list[Detection]:
+        np = _require_numpy()
+        cv2 = _require_cv2()
+        self._ensure_net()
+        img = cv2.imdecode(np.frombuffer(frame_jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            return []
+        blob = cv2.dnn.blobFromImage(
+            img,
+            self._scale,
+            (self._input_size, self._input_size),
+            self._mean,
+            swapRB=self._swap_rb,
+        )
+        assert self._net is not None
+        self._net.setInput(blob)
+        output = self._net.forward()  # shape (1, 1, N, 7)
+        detections: list[Detection] = []
+        for i in range(output.shape[2]):
+            class_id = int(output[0, 0, i, 1])
+            confidence = float(output[0, 0, i, 2])
+            if class_id != self._person_class_id or confidence < self._score_threshold:
+                continue
+            x1 = min(max(float(output[0, 0, i, 3]), 0.0), 1.0)
+            y1 = min(max(float(output[0, 0, i, 4]), 0.0), 1.0)
+            x2 = min(max(float(output[0, 0, i, 5]), 0.0), 1.0)
+            y2 = min(max(float(output[0, 0, i, 6]), 0.0), 1.0)
+            detections.append(
+                Detection(
+                    cx=(x1 + x2) / 2.0,
+                    cy=(y1 + y2) / 2.0,
+                    w=max(x2 - x1, 0.0),
+                    h=max(y2 - y1, 0.0),
+                    confidence=confidence,
                 )
             )
         return detections

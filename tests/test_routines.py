@@ -17,6 +17,7 @@ from autonomon import (
     FakeDetector,
     FanInSlot,
     ObstacleWorldModel,
+    OpenCvDnnDetector,
     OpenCvHogDetector,
     Perceptron,
     Pipeline,
@@ -216,6 +217,13 @@ def test_follow_user_default_detector_is_yolo() -> None:
 
 def test_follow_user_detector_param_selects_opencv_hog() -> None:
     assert isinstance(_follow_user_detector({"detector": "opencv-hog"}), OpenCvHogDetector)
+
+
+def test_follow_user_detector_param_selects_opencv_dnn() -> None:
+    det = _follow_user_detector({"detector": "opencv-dnn", "model_path": "m", "model_config": "c"})
+    assert isinstance(det, OpenCvDnnDetector)
+    assert det._model_path == "m"
+    assert det._config_path == "c"
 
 
 def test_follow_user_detector_env_selects_opencv_hog(monkeypatch: pytest.MonkeyPatch) -> None:

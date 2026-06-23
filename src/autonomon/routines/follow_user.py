@@ -13,9 +13,13 @@ The detector is chosen at build time by *kind* — ``detector`` param or
 * ``yolo-onnx`` — :class:`YoloOnnxDetector` over a YOLOv8n ONNX model
   (``model_path`` param or ``NOMON_VISION_MODEL_PATH``). Most accurate; needs the
   ``vision`` extra and a downloaded model.
+* ``opencv-dnn`` — :class:`OpenCvDnnDetector`, a MobileNet-SSD via ``cv2.dnn``
+  (``model_path`` = caffemodel, ``model_config`` = prototxt, or the
+  ``NOMON_VISION_MODEL_PATH``/``NOMON_VISION_MODEL_CONFIG`` env vars). Robust and
+  light: only a ~23 MB model on top of the ``vision-opencv`` extra.
 * ``opencv-hog`` — :class:`OpenCvHogDetector`, OpenCV's built-in HOG+SVM people
-  detector. **No model file**, lighter install (``vision-opencv`` extra); a good
-  first bring-up while the YOLO model is not yet on the device.
+  detector. **No model file**, lightest install; brittle (architectural edges fool
+  it), so it is a last resort rather than the default.
 * ``fake`` — :class:`FakeDetector` returning no detections.
 
 Setting ``NOMON_VISION_FAKE_DETECTIONS`` to a JSON array of detections forces a
@@ -38,6 +42,7 @@ from autonomon.action.vehicle import VehicleAction
 from autonomon.perception.detector import (
     Detector,
     FakeDetector,
+    OpenCvDnnDetector,
     OpenCvHogDetector,
     YoloOnnxDetector,
 )
@@ -56,6 +61,7 @@ _DEFAULT_DETECTOR = "yolo-onnx"
 # Env hooks (deploy/runtime concerns, not behaviour params).
 _ENV_DETECTOR = "NOMON_VISION_DETECTOR"
 _ENV_MODEL_PATH = "NOMON_VISION_MODEL_PATH"
+_ENV_MODEL_CONFIG = "NOMON_VISION_MODEL_CONFIG"
 _ENV_FAKE_DETECTIONS = "NOMON_VISION_FAKE_DETECTIONS"
 
 FOLLOW_USER_PARAMS_SCHEMA: dict[str, dict[str, Any]] = {
@@ -87,17 +93,27 @@ FOLLOW_USER_PARAMS_SCHEMA: dict[str, dict[str, Any]] = {
     "detector": {
         "type": "string",
         "description": (
-            "Detector backend: 'yolo-onnx' (YOLOv8n, needs a model), 'opencv-hog' "
-            "(OpenCV HOG+SVM, no model file), or 'fake'. Falls back to the "
-            "NOMON_VISION_DETECTOR environment variable, then 'yolo-onnx'."
+            "Detector backend: 'yolo-onnx' (YOLOv8n, needs a model), 'opencv-dnn' "
+            "(MobileNet-SSD via cv2.dnn, small model), 'opencv-hog' (OpenCV HOG+SVM, "
+            "no model file), or 'fake'. Falls back to the NOMON_VISION_DETECTOR "
+            "environment variable, then 'yolo-onnx'."
         ),
         "default": _DEFAULT_DETECTOR,
     },
     "model_path": {
         "type": "string",
         "description": (
-            "Path to the YOLOv8n ONNX model (yolo-onnx detector only). Falls back to "
-            "the NOMON_VISION_MODEL_PATH environment variable when absent."
+            "Path to the detector weights — YOLOv8n ONNX (yolo-onnx) or the "
+            "MobileNet-SSD .caffemodel (opencv-dnn). Falls back to the "
+            "NOMON_VISION_MODEL_PATH environment variable when absent."
+        ),
+        "default": "",
+    },
+    "model_config": {
+        "type": "string",
+        "description": (
+            "Path to the MobileNet-SSD .prototxt (opencv-dnn detector only). Falls "
+            "back to the NOMON_VISION_MODEL_CONFIG environment variable when absent."
         ),
         "default": "",
     },
@@ -124,12 +140,17 @@ def _build_detector(params: dict[str, Any]) -> Detector:
     if kind == "yolo-onnx":
         model_path = params.get("model_path") or os.environ.get(_ENV_MODEL_PATH, "")
         return YoloOnnxDetector(model_path)
+    if kind == "opencv-dnn":
+        model_path = params.get("model_path") or os.environ.get(_ENV_MODEL_PATH, "")
+        config_path = params.get("model_config") or os.environ.get(_ENV_MODEL_CONFIG, "")
+        return OpenCvDnnDetector(model_path, config_path)
     if kind == "opencv-hog":
         return OpenCvHogDetector()
     if kind == "fake":
         return FakeDetector()
     raise ValueError(
-        f"unknown vision detector {kind!r}; expected 'yolo-onnx', 'opencv-hog', or 'fake'"
+        f"unknown vision detector {kind!r}; expected 'yolo-onnx', 'opencv-dnn', "
+        "'opencv-hog', or 'fake'"
     )
 
 

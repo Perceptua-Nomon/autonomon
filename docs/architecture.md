@@ -526,10 +526,12 @@ because none exists or should.
 
 The detector is swappable behind the `Detector` protocol and chosen by kind
 (`detector` param / `NOMON_VISION_DETECTOR`): `yolo-onnx` (YOLOv8n via
-onnxruntime, the default), `opencv-hog` (OpenCV HOG+SVM, no model file), or
-`fake`. The chosen detector and its model path are autonomon-only config: the
-`nomon-autonomon` CLI self-loads them from `/etc/autonomon/autonomon.env`, so
-nomothetic carries nothing about detectors or models (ADR-004/005).
+onnxruntime, the default and most accurate), `opencv-dnn` (MobileNet-SSD via
+`cv2.dnn` — robust and light, the recommended OpenCV option), `opencv-hog`
+(OpenCV HOG+SVM, no model file but brittle), or `fake`. The chosen detector and
+its model path(s) are autonomon-only config: the `nomon-autonomon` CLI self-loads
+them from `/etc/autonomon/autonomon.env`, so nomothetic carries nothing about
+detectors or models (ADR-004/005).
 
 All calls use device-scoped JWT (`NOMON_PLUGIN_TOKEN`) in the `Authorization: Bearer` header. TLS verification is skipped for self-signed device certs (`verify=False` on httpx, documented in ADR-001 of nomothetic).
 

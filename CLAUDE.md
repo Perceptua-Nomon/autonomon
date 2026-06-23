@@ -90,8 +90,11 @@ the `detector` param or `NOMON_VISION_DETECTOR` env var (`_build_detector` in
 `routines/follow_user.py`):
 - `yolo-onnx` (default) — `YoloOnnxDetector`, YOLOv8n via onnxruntime (`vision` extra +
   a `yolov8n.onnx` at `NOMON_VISION_MODEL_PATH`). Most accurate.
+- `opencv-dnn` — `OpenCvDnnDetector`, MobileNet-SSD via `cv2.dnn` (`vision-opencv` extra +
+  a ~23 MB caffemodel at `NOMON_VISION_MODEL_PATH` and prototxt at
+  `NOMON_VISION_MODEL_CONFIG`). Robust and light — the recommended OpenCV option.
 - `opencv-hog` — `OpenCvHogDetector`, OpenCV's built-in HOG+SVM (`vision-opencv` extra).
-  **No model file**, lighter/faster to deploy; good for first bring-up.
+  **No model file**, but brittle (architectural edges fool it) — a last resort.
 - `fake` — `FakeDetector` (no deps). `NOMON_VISION_FAKE_DETECTIONS` (a JSON array)
   forces a scripted `FakeDetector` regardless of kind — the dev/CI hook.
 

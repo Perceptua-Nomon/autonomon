@@ -9,6 +9,7 @@ from autonomon.perception.detector import (
     Detection,
     Detector,
     FakeDetector,
+    OpenCvDnnDetector,
     OpenCvHogDetector,
     YoloOnnxDetector,
 )
@@ -52,6 +53,7 @@ __all__ = [
     "Detection",
     "Detector",
     "FakeDetector",
+    "OpenCvDnnDetector",
     "OpenCvHogDetector",
     "YoloOnnxDetector",
     # Pipeline and slot primitives
