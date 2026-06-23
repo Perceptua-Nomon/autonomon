@@ -362,6 +362,46 @@ _published="$("${REMOTE_DIR}/.venv/bin/python" -c \
     'import json,sys; print(json.load(open(sys.argv[1]))["routines"])' "${CATALOG_PATH}")"
 echo "  Catalogue published (routines: ${_published}) ✓"
 
+# ── Vision model (follow-user routine) ───────────────────────────────────────
+# The follow-user routine needs a yolov8n.onnx person-detection model.
+# Download or export it to /var/lib/nomon/models/ and advertise its path in
+# /etc/nomothetic/nomothetic.env so nomothetic passes NOMON_VISION_MODEL_PATH
+# to the autonomon subprocess (routine_manager._ENV_PASSTHROUGH).
+# Skip if NOMON_VISION_MODEL_PATH is already set in the environment (e.g.
+# a custom model was installed manually before this deploy).
+
+VISION_MODEL_DIR="/var/lib/nomon/models"
+VISION_MODEL_PATH="${VISION_MODEL_DIR}/yolov8n.onnx"
+NOMOTHETIC_ENV_FILE="/etc/nomothetic/nomothetic.env"
+
+if [[ -z "${NOMON_VISION_MODEL_PATH:-}" ]]; then
+    if [[ ! -f "${VISION_MODEL_PATH}" ]]; then
+        echo "==> Fetching vision model (yolov8n.onnx)..."
+        sudo mkdir -p "${VISION_MODEL_DIR}"
+        MODEL_DIR="${VISION_MODEL_DIR}" MODEL_PATH="${VISION_MODEL_PATH}" \
+            bash "${REMOTE_DIR}/scripts/fetch_model.sh"
+        sudo chmod 644 "${VISION_MODEL_PATH}"
+        echo "  Model ready: ${VISION_MODEL_PATH} ✓"
+    else
+        echo "==> Vision model already present: ${VISION_MODEL_PATH} ✓"
+    fi
+    NOMON_VISION_MODEL_PATH="${VISION_MODEL_PATH}"
+fi
+
+# Upsert NOMON_VISION_MODEL_PATH in /etc/nomothetic/nomothetic.env so nomothetic
+# (which loads that file as its systemd EnvironmentFile) passes it through to
+# the autonomon subprocess.
+if [[ -f "${NOMOTHETIC_ENV_FILE}" ]]; then
+    if grep -qE '^\s*NOMON_VISION_MODEL_PATH\s*=' "${NOMOTHETIC_ENV_FILE}" 2>/dev/null; then
+        sudo sed -i "s|^\s*NOMON_VISION_MODEL_PATH\s*=.*|NOMON_VISION_MODEL_PATH=${NOMON_VISION_MODEL_PATH}|" \
+            "${NOMOTHETIC_ENV_FILE}"
+    else
+        printf '\nNOMON_VISION_MODEL_PATH=%s\n' "${NOMON_VISION_MODEL_PATH}" \
+            | sudo tee -a "${NOMOTHETIC_ENV_FILE}" > /dev/null
+    fi
+    echo "  NOMON_VISION_MODEL_PATH set in ${NOMOTHETIC_ENV_FILE} ✓"
+fi
+
 # ── Plugin auth: key + env file (ADR-019) ─────────────────────────────────────
 # Generate an Ed25519 private key on-device (never leaves the Pi) and write the
 # plugin env file pointing at it. The public half is registered with nomothetic
