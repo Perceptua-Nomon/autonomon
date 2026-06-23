@@ -83,14 +83,22 @@ class _MockDevice:
         self._server.server_close()
 
 
+_ACTUATOR_PATHS = frozenset({"/api/hat/motor/stop", "/api/drive", "/api/steer"})
+
+
 def _run_routine(
     device: _MockDevice,
     params: dict[str, Any],
     *,
     extra_env: dict[str, str] | None = None,
-    run_s: float = 3.0,
+    run_s: float = 30.0,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Run the CLI subprocess until it has posted a couple of commands, then SIGINT it.
+    """Run the CLI subprocess until an actuator command arrives, then SIGINT it.
+
+    Waits for a POST to one of the actuator endpoints (_ACTUATOR_PATHS), not just
+    any POST — lifecycle event POSTs (e.g. /api/routines/explore/events) happen
+    before the pipeline runs and would otherwise satisfy a naive count check.
+    The default timeout (30 s) is generous enough for Pi Zero 2W startup overhead.
 
     Returns the parsed NDJSON lifecycle events from stdout and the exit code.
     """
@@ -117,7 +125,9 @@ def _run_routine(
         text=True,
     )
     deadline = time.time() + run_s
-    while time.time() < deadline and len(device.posts) < 2:
+    while time.time() < deadline:
+        if any(p in _ACTUATOR_PATHS for p in device.posts):
+            break
         time.sleep(0.05)
     proc.send_signal(signal.SIGINT)
     try:
