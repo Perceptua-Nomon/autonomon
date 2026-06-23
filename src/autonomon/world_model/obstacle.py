@@ -53,29 +53,33 @@ class ObstacleWorldModel(WorldModelBase):
         self._state: dict[str, Any] = {"obstacle_ahead": False, "cliff_detected": False}
         self._stop = asyncio.Event()
 
-    async def run(self, queue_in: asyncio.Queue, queue_out: asyncio.Queue) -> None:  # type: ignore[type-arg]
+    async def run(
+        self,
+        queue_in: asyncio.Queue[PerceptionEvent],
+        queue_out: asyncio.Queue[WorldStateUpdate],
+    ) -> None:
         """Consume PerceptionEvents and emit WorldStateUpdates on state change.
 
         Parameters
         ----------
-        queue_in : asyncio.Queue
-            Source of ``PerceptionEvent.to_dict()`` items.
-        queue_out : asyncio.Queue
-            Receives ``WorldStateUpdate.to_dict()`` items. The first observation
-            is always emitted as a baseline (``delta`` empty) so the planner has
-            an initial world state; subsequent updates are emitted only when the
+        queue_in : asyncio.Queue[PerceptionEvent]
+            Source of ``PerceptionEvent`` instances.
+        queue_out : asyncio.Queue[WorldStateUpdate]
+            Receives ``WorldStateUpdate`` instances. The first observation is
+            always emitted as a baseline (``delta`` empty) so the planner has an
+            initial world state; subsequent updates are emitted only when the
             tracked state changes.
         """
         emitted = False
         while not self._stop.is_set():
             try:
-                msg = await asyncio.wait_for(queue_in.get(), timeout=_QUEUE_GET_TIMEOUT_S)
+                event = await asyncio.wait_for(queue_in.get(), timeout=_QUEUE_GET_TIMEOUT_S)
             except asyncio.TimeoutError:
                 continue
-            delta = self._apply(PerceptionEvent.from_dict(msg))
+            delta = self._apply(event)
             if not emitted or delta:
                 emitted = True
-                await queue_out.put(self._build_update(delta).to_dict())
+                await queue_out.put(self._build_update(delta))
 
     def _apply(self, event: PerceptionEvent) -> dict[str, Any]:
         """Update state from one event; return the changed fields (empty if none)."""

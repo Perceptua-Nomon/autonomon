@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from autonomon import Perceptron
+from autonomon import PerceptionEvent, Perceptron
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -29,9 +29,9 @@ def _mock_client(json_body: dict[str, Any]) -> AsyncMock:
     return client
 
 
-async def _collect_one(perceptron: Perceptron) -> dict[str, Any]:
+async def _collect_one(perceptron: Perceptron) -> PerceptionEvent:
     """Run the perceptron, collect the first event, then stop it."""
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q: asyncio.Queue[PerceptionEvent] = asyncio.Queue()
     task = asyncio.create_task(perceptron.run(q))
     event = await asyncio.wait_for(q.get(), timeout=1.0)
     await perceptron.stop()
@@ -51,10 +51,10 @@ async def test_ultrasonic_emits_distance_cm() -> None:
 
     event = await _collect_one(p)
 
-    assert event["type"] == "perception_event"
-    assert event["sensor_type"] == "ultrasonic"
-    assert event["data"]["distance_cm"] == pytest.approx(24.7)
-    assert event["device_id"] == "nomon-test"
+    assert event.type == "perception_event"
+    assert event.sensor_type == "ultrasonic"
+    assert event.data["distance_cm"] == pytest.approx(24.7)
+    assert event.device_id == "nomon-test"
     client.get.assert_called_with("/api/sensor/ultrasonic")
 
 
@@ -65,7 +65,7 @@ async def test_ultrasonic_none_distance_when_out_of_range() -> None:
 
     event = await _collect_one(p)
 
-    assert event["data"]["distance_cm"] is None
+    assert event.data["distance_cm"] is None
 
 
 @pytest.mark.asyncio
@@ -81,9 +81,9 @@ async def test_grayscale_emits_raw_values() -> None:
 
     event = await _collect_one(p)
 
-    assert event["sensor_type"] == "grayscale"
-    assert event["data"]["channels"] == [0, 1, 2]
-    assert event["data"]["values"] == [485, 580, 30]
+    assert event.sensor_type == "grayscale"
+    assert event.data["channels"] == [0, 1, 2]
+    assert event.data["values"] == [485, 580, 30]
     client.get.assert_called_with("/api/sensor/grayscale")
 
 
@@ -94,8 +94,8 @@ async def test_battery_emits_voltage() -> None:
 
     event = await _collect_one(p)
 
-    assert event["sensor_type"] == "battery"
-    assert event["data"]["voltage_v"] == pytest.approx(7.4)
+    assert event.sensor_type == "battery"
+    assert event.data["voltage_v"] == pytest.approx(7.4)
     client.get.assert_called_with("/api/hat/battery")
 
 
@@ -117,8 +117,8 @@ async def test_custom_sensor_type_and_interpreter() -> None:
 
     event = await _collect_one(p)
 
-    assert event["sensor_type"] == "temperature"
-    assert event["data"]["celsius"] == pytest.approx(27.5)
+    assert event.sensor_type == "temperature"
+    assert event.data["celsius"] == pytest.approx(27.5)
     client.get.assert_called_with("/api/sensor/temperature")
 
 
@@ -135,7 +135,7 @@ async def test_unknown_sensor_type_falls_back_to_full_body() -> None:
 
     event = await _collect_one(p)
 
-    assert event["data"]["foo"] == 42
+    assert event.data["foo"] == 42
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +205,7 @@ async def test_transient_failure_does_not_stop_loop(first_poll: Any, timeout_s: 
 
     event = await _collect_one(p)
 
-    assert event["data"]["distance_cm"] == pytest.approx(7.0)
+    assert event.data["distance_cm"] == pytest.approx(7.0)
 
 
 # ---------------------------------------------------------------------------

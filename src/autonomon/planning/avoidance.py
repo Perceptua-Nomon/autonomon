@@ -75,16 +75,20 @@ class AvoidancePlanner(PlannerBase):
         self._plan_counter = 0
         self._stop = asyncio.Event()
 
-    async def run(self, queue_in: asyncio.Queue, queue_out: asyncio.Queue) -> None:  # type: ignore[type-arg]
+    async def run(
+        self,
+        queue_in: asyncio.Queue[WorldStateUpdate],
+        queue_out: asyncio.Queue[ActionPlan],
+    ) -> None:
         """Evaluate world state and emit ActionPlans on strategy change.
 
         Parameters
         ----------
-        queue_in : asyncio.Queue
-            Source of ``WorldStateUpdate.to_dict()`` items.
-        queue_out : asyncio.Queue
-            Receives ``ActionPlan.to_dict()`` items, emitted only when the
-            selected strategy changes.
+        queue_in : asyncio.Queue[WorldStateUpdate]
+            Source of ``WorldStateUpdate`` instances.
+        queue_out : asyncio.Queue[ActionPlan]
+            Receives ``ActionPlan`` instances, emitted only when the selected
+            strategy changes.
 
         An active avoid maneuver is also re-checked while the queue is idle, so
         the planner can release back to cruise when ``avoid_duration_s`` elapses
@@ -93,14 +97,14 @@ class AvoidancePlanner(PlannerBase):
         loop = asyncio.get_running_loop()
         while not self._stop.is_set():
             try:
-                msg = await asyncio.wait_for(queue_in.get(), timeout=_QUEUE_GET_TIMEOUT_S)
+                update = await asyncio.wait_for(queue_in.get(), timeout=_QUEUE_GET_TIMEOUT_S)
             except asyncio.TimeoutError:
-                msg = None
-            if msg is not None:
-                self._last_state = WorldStateUpdate.from_dict(msg).state
+                update = None
+            if update is not None:
+                self._last_state = update.state
             await self._tick(queue_out, loop.time())
 
-    async def _tick(self, queue_out: asyncio.Queue, now: float) -> None:  # type: ignore[type-arg]
+    async def _tick(self, queue_out: asyncio.Queue[ActionPlan], now: float) -> None:
         """Select a strategy for the latest state and emit it on change.
 
         While an avoid maneuver is still within its committed ``avoid_duration_s``
@@ -109,8 +113,8 @@ class AvoidancePlanner(PlannerBase):
 
         Parameters
         ----------
-        queue_out : asyncio.Queue
-            Receives ``ActionPlan.to_dict()`` items on strategy change.
+        queue_out : asyncio.Queue[ActionPlan]
+            Receives ``ActionPlan`` instances on strategy change.
         now : float
             Current event-loop monotonic time (``loop.time()``).
         """
@@ -123,7 +127,7 @@ class AvoidancePlanner(PlannerBase):
         self._avoid_until = now + self._avoid_duration_s if kind == _KIND_AVOID else None
         if kind != self._last_kind:
             self._last_kind = kind
-            await queue_out.put(self._build_plan(kind, actions).to_dict())
+            await queue_out.put(self._build_plan(kind, actions))
 
     def _select(self, state: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
         """Return the (kind, actions) for the current world state."""

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "autonomon"
-version = "0.2.0"
+version = "0.3.0"
 description = "Four-layer autonomous capabilities framework for the nomon fleet."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -38,6 +38,23 @@ dev = [
     "black>=23.0",
     "ruff>=0.1.0",
     "mypy>=1.0",
+]
+# Vision stack for the `follow-user` routine (person detection). Kept optional and
+# lazy-imported so the core install and non-vision tests stay light. `ultralytics`
+# (AGPL) is NOT a runtime dep — it is used only offline to export the YOLOv8n ONNX
+# model that this stack runs via onnxruntime.
+vision = [
+    "onnxruntime>=1.17",
+    "numpy>=1.24",
+    "pillow>=10.0",
+]
+# Lighter alternative detector: OpenCV's built-in HOG+SVM people detector. Needs
+# no model file (the SVM ships inside OpenCV), so it deploys without a weights
+# download — handy for first bring-up before the YOLO model is on-device. Headless
+# build (no GUI/Qt deps); aarch64 wheels exist. Lazy-imported like the YOLO stack.
+vision-opencv = [
+    "opencv-python-headless>=4.8",
+    "numpy>=1.24",
 ]
 
 [project.scripts]

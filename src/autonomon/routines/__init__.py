@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any
 
 from autonomon.routines.explore import EXPLORE_PARAMS_SCHEMA, build_explore
+from autonomon.routines.follow_user import FOLLOW_USER_PARAMS_SCHEMA, build_follow_user
 from autonomon.routines.registry import (
     ROUTINES,
     RoutineFactory,
@@ -30,6 +31,7 @@ from autonomon.routines.registry import (
 # the union of these so the plugin manager can present params for every routine.
 _PARAM_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
     "explore": EXPLORE_PARAMS_SCHEMA,
+    "follow-user": FOLLOW_USER_PARAMS_SCHEMA,
 }
 
 
@@ -46,7 +48,7 @@ def _union_params_schema() -> dict[str, dict[str, Any]]:
 # nomothetic never imports autonomon.
 nomon_manifest: dict[str, object] = {
     "name": "autonomon",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "routines": available_routines(),
     "params_schema": _union_params_schema(),
 }
@@ -59,5 +61,7 @@ __all__ = [
     "get_routine",
     "build_explore",
     "EXPLORE_PARAMS_SCHEMA",
+    "build_follow_user",
+    "FOLLOW_USER_PARAMS_SCHEMA",
     "nomon_manifest",
 ]

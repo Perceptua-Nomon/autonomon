@@ -14,12 +14,19 @@ import pytest
 
 from autonomon import (
     AvoidancePlanner,
+    FakeDetector,
     FanInSlot,
     ObstacleWorldModel,
+    OpenCvDnnDetector,
+    OpenCvHogDetector,
     Perceptron,
     Pipeline,
+    PursuitPlanner,
+    TargetWorldModel,
     UnknownRoutineError,
     VehicleAction,
+    VisionPerception,
+    YoloOnnxDetector,
     available_routines,
     get_routine,
 )
@@ -140,6 +147,117 @@ def test_explore_default_params_when_absent() -> None:
 
 
 # ---------------------------------------------------------------------------
+# follow-user factory wiring
+# ---------------------------------------------------------------------------
+
+
+def test_available_routines_lists_follow_user() -> None:
+    assert "follow-user" in available_routines()
+
+
+def test_follow_user_wires_the_new_layers_and_reuses_action() -> None:
+    # No model env set: YoloOnnxDetector is constructed with an empty path (lazy
+    # load), so the factory builds a full pipeline without a model present.
+    pipeline = get_routine("follow-user")(_client(), "nomon-1", {})
+    assert isinstance(pipeline, Pipeline)
+    slots = pipeline._slots
+    assert isinstance(slots["perception"]._impl, VisionPerception)  # type: ignore[union-attr]
+    assert isinstance(slots["world_model"]._impl, TargetWorldModel)  # type: ignore[union-attr]
+    assert isinstance(slots["planner"]._impl, PursuitPlanner)  # type: ignore[union-attr]
+    assert isinstance(slots["action"]._impl, VehicleAction)  # type: ignore[union-attr]
+
+
+def test_follow_user_uses_fake_detector_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "NOMON_VISION_FAKE_DETECTIONS",
+        '[{"cx": 0.5, "cy": 0.5, "w": 0.2, "h": 0.6, "confidence": 0.9}]',
+    )
+    pipeline = get_routine("follow-user")(_client(), "nomon-1", {})
+    perception = cast(VisionPerception, pipeline._slots["perception"]._impl)  # type: ignore[union-attr]
+    # The injected detector returns the scripted detection regardless of the frame.
+    detections = perception._detector.detect(b"")
+    assert len(detections) == 1
+    assert detections[0].confidence == 0.9
+
+
+def test_follow_user_params_map_to_layer_args() -> None:
+    params: dict[str, Any] = {
+        "target_distance_cm": 120.0,
+        "max_speed_pct": 40.0,
+        "confidence_threshold": 0.7,
+        "camera_hfov_deg": 62.0,
+        "lost_target_timeout_s": 2.0,
+    }
+    pipeline = get_routine("follow-user")(_client(), "nomon-1", params)
+    perception = cast(VisionPerception, pipeline._slots["perception"]._impl)  # type: ignore[union-attr]
+    world_model = cast(TargetWorldModel, pipeline._slots["world_model"]._impl)  # type: ignore[union-attr]
+    planner = cast(PursuitPlanner, pipeline._slots["planner"]._impl)  # type: ignore[union-attr]
+    assert perception._confidence_threshold == 0.7
+    assert perception._camera_hfov_deg == 62.0
+    assert world_model._lost_target_timeout_s == 2.0
+    assert planner._target_distance_cm == 120.0
+    assert planner._max_speed_pct == 40.0
+
+
+# ---------------------------------------------------------------------------
+# follow-user detector selection
+# ---------------------------------------------------------------------------
+
+
+def _follow_user_detector(params: dict[str, Any]) -> Any:
+    """Build the follow-user pipeline and return its injected detector."""
+    pipeline = get_routine("follow-user")(_client(), "nomon-1", params)
+    perception = cast(VisionPerception, pipeline._slots["perception"]._impl)  # type: ignore[union-attr]
+    return perception._detector
+
+
+def test_follow_user_default_detector_is_yolo() -> None:
+    assert isinstance(_follow_user_detector({}), YoloOnnxDetector)
+
+
+def test_follow_user_detector_param_selects_opencv_hog() -> None:
+    assert isinstance(_follow_user_detector({"detector": "opencv-hog"}), OpenCvHogDetector)
+
+
+def test_follow_user_detector_param_selects_opencv_dnn() -> None:
+    det = _follow_user_detector({"detector": "opencv-dnn", "model_path": "m", "model_config": "c"})
+    assert isinstance(det, OpenCvDnnDetector)
+    assert det._model_path == "m"
+    assert det._config_path == "c"
+
+
+def test_follow_user_detector_env_selects_opencv_hog(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NOMON_VISION_DETECTOR", "opencv-hog")
+    assert isinstance(_follow_user_detector({}), OpenCvHogDetector)
+
+
+def test_follow_user_detector_param_overrides_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NOMON_VISION_DETECTOR", "opencv-hog")
+    # An explicit param wins over the env default.
+    assert isinstance(_follow_user_detector({"detector": "yolo-onnx"}), YoloOnnxDetector)
+
+
+def test_follow_user_detector_fake_kind() -> None:
+    assert isinstance(_follow_user_detector({"detector": "fake"}), FakeDetector)
+
+
+def test_follow_user_fake_detections_env_overrides_kind(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The scripted dev hook wins outright, even when a real detector kind is set.
+    monkeypatch.setenv(
+        "NOMON_VISION_FAKE_DETECTIONS",
+        '[{"cx": 0.5, "cy": 0.5, "w": 0.2, "h": 0.6, "confidence": 0.9}]',
+    )
+    det = _follow_user_detector({"detector": "opencv-hog"})
+    assert isinstance(det, FakeDetector)
+    assert det.detect(b"")[0].confidence == 0.9
+
+
+def test_follow_user_unknown_detector_raises() -> None:
+    with pytest.raises(ValueError, match="unknown vision detector"):
+        get_routine("follow-user")(_client(), "nomon-1", {"detector": "nope"})
+
+
+# ---------------------------------------------------------------------------
 # Manifest
 # ---------------------------------------------------------------------------
 
@@ -147,6 +265,9 @@ def test_explore_default_params_when_absent() -> None:
 def test_manifest_advertises_routines_and_params() -> None:
     assert nomon_manifest["name"] == "autonomon"
     assert "explore" in nomon_manifest["routines"]  # type: ignore[operator]
+    assert "follow-user" in nomon_manifest["routines"]  # type: ignore[operator]
     params_schema = nomon_manifest["params_schema"]
     assert "obstacle_threshold_cm" in params_schema  # type: ignore[operator]
     assert "cliff_detection" in params_schema  # type: ignore[operator]
+    # follow-user params are in the union too.
+    assert "target_distance_cm" in params_schema  # type: ignore[operator]

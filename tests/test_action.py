@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from autonomon import ActionPlan, VehicleAction
+from autonomon import ActionPlan, ActionResult, VehicleAction
 
 
 def _ok_response(json_body: dict[str, Any] | None = None) -> MagicMock:
@@ -25,15 +25,15 @@ def _mock_client() -> AsyncMock:
     return client
 
 
-def _plan(actions: list[dict[str, Any]], plan_id: str = "p1") -> dict[str, Any]:
-    return ActionPlan(timestamp="t", device_id="d", plan_id=plan_id, actions=actions).to_dict()
+def _plan(actions: list[dict[str, Any]], plan_id: str = "p1") -> ActionPlan:
+    return ActionPlan(timestamp="t", device_id="d", plan_id=plan_id, actions=actions)
 
 
 async def _run_plan(
-    action: VehicleAction, plan: dict[str, Any], results: asyncio.Queue, expect: int
-) -> list[dict[str, Any]]:
+    action: VehicleAction, plan: ActionPlan, results: asyncio.Queue, expect: int
+) -> list[ActionResult]:
     """Feed one plan, drain ``expect`` results, then stop."""
-    q_in: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q_in: asyncio.Queue[ActionPlan] = asyncio.Queue()
     task = asyncio.create_task(action.run(q_in))
     await q_in.put(plan)
     out = [await asyncio.wait_for(results.get(), timeout=1.0) for _ in range(expect)]
@@ -53,8 +53,8 @@ async def test_drive_maps_to_api_drive() -> None:
     )
 
     client.post.assert_awaited_once_with("/api/drive", json={"speed_pct": 30, "ttl_ms": 500})
-    assert out[0]["success"] is True
-    assert out[0]["type"] == "action_result"
+    assert out[0].success is True
+    assert out[0].type == "action_result"
 
 
 @pytest.mark.asyncio
@@ -114,8 +114,8 @@ async def test_unknown_method_yields_failure_result_no_post() -> None:
         action, _plan([{"method": "teleport", "params": {}, "priority": 0}]), results, 1
     )
 
-    assert out[0]["success"] is False
-    assert "unknown method" in out[0]["error"]
+    assert out[0].success is False
+    assert "unknown method" in (out[0].error or "")
     client.post.assert_not_called()
 
 
@@ -130,10 +130,10 @@ async def test_known_method_missing_param_reported_not_dropped() -> None:
         action, _plan([{"method": "drive", "params": {}, "priority": 0}]), results, 1
     )
 
-    assert out[0]["success"] is False
-    assert "missing param" in out[0]["error"]
-    assert "speed_pct" in out[0]["error"]
-    assert "unknown method" not in out[0]["error"]
+    assert out[0].success is False
+    assert "missing param" in (out[0].error or "")
+    assert "speed_pct" in (out[0].error or "")
+    assert "unknown method" not in (out[0].error or "")
     client.post.assert_not_called()
 
 
@@ -154,8 +154,8 @@ async def test_http_error_recorded_and_loop_continues() -> None:
         action, _plan([{"method": "drive", "params": {"speed_pct": 30}, "priority": 0}]), results, 1
     )
 
-    assert out[0]["success"] is False
-    assert "HTTP 503" in out[0]["error"]
+    assert out[0].success is False
+    assert "HTTP 503" in (out[0].error or "")
 
 
 @pytest.mark.asyncio
@@ -170,8 +170,88 @@ async def test_request_error_recorded() -> None:
         action, _plan([{"method": "drive", "params": {"speed_pct": 30}, "priority": 0}]), results, 1
     )
 
-    assert out[0]["success"] is False
-    assert "connection refused" in out[0]["error"]
+    assert out[0].success is False
+    assert "connection refused" in (out[0].error or "")
+
+
+@pytest.mark.asyncio
+async def test_transient_error_is_retried_then_succeeds() -> None:
+    """A transient failure on the first attempt is retried; the second succeeds."""
+    client = AsyncMock(spec=httpx.AsyncClient)
+    state = {"n": 0}
+
+    async def _post(endpoint: str, json: Any = None) -> MagicMock:
+        state["n"] += 1
+        if state["n"] == 1:
+            raise httpx.ConnectError("transient")
+        return _ok_response()
+
+    client.post.side_effect = _post
+    results: asyncio.Queue = asyncio.Queue()
+    action = VehicleAction(
+        client, device_id="nomon-test", results=results, max_retries=2, backoff_base_s=0.0
+    )
+
+    out = await _run_plan(
+        action, _plan([{"method": "drive", "params": {"speed_pct": 30}, "priority": 0}]), results, 1
+    )
+
+    assert out[0].success is True
+    assert client.post.await_count >= 2  # first attempt failed, retried
+
+
+@pytest.mark.asyncio
+async def test_5xx_motion_command_triggers_safety_stop() -> None:
+    """A drive that 5xxes after retries must emit a safety motor-stop."""
+    client = AsyncMock(spec=httpx.AsyncClient)
+    err_resp = MagicMock(spec=httpx.Response)
+    err_resp.status_code = 503
+    err_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "503", request=MagicMock(), response=err_resp
+    )
+
+    async def _post(endpoint: str, json: Any = None) -> MagicMock:
+        return _ok_response() if endpoint == "/api/hat/motor/stop" else err_resp
+
+    client.post.side_effect = _post
+    results: asyncio.Queue = asyncio.Queue()
+    action = VehicleAction(
+        client, device_id="nomon-test", results=results, max_retries=1, backoff_base_s=0.0
+    )
+
+    out = await _run_plan(
+        action, _plan([{"method": "drive", "params": {"speed_pct": 30}, "priority": 0}]), results, 1
+    )
+
+    assert out[0].success is False
+    assert "HTTP 503" in (out[0].error or "")
+    posted = [c.args[0] for c in client.post.await_args_list]
+    assert "/api/hat/motor/stop" in posted  # safety stop issued after the failed drive
+
+
+@pytest.mark.asyncio
+async def test_4xx_is_not_retried_and_no_safety_stop() -> None:
+    """A 4xx is a rejected command: no retry, and no safety stop."""
+    client = AsyncMock(spec=httpx.AsyncClient)
+    err_resp = MagicMock(spec=httpx.Response)
+    err_resp.status_code = 400
+    err_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "400", request=MagicMock(), response=err_resp
+    )
+    client.post.return_value = err_resp
+    results: asyncio.Queue = asyncio.Queue()
+    action = VehicleAction(
+        client, device_id="nomon-test", results=results, max_retries=3, backoff_base_s=0.0
+    )
+
+    out = await _run_plan(
+        action, _plan([{"method": "drive", "params": {"speed_pct": 30}, "priority": 0}]), results, 1
+    )
+
+    assert out[0].success is False
+    assert "HTTP 400" in (out[0].error or "")
+    posted = [c.args[0] for c in client.post.await_args_list]
+    assert posted == ["/api/drive"]  # exactly one attempt, no retry, no safety stop
 
 
 @pytest.mark.asyncio

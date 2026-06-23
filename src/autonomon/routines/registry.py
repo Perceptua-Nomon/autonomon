@@ -15,6 +15,7 @@ import httpx
 
 from autonomon.pipeline import Pipeline
 from autonomon.routines.explore import build_explore
+from autonomon.routines.follow_user import build_follow_user
 
 # A routine factory: (client, device_id, params) -> Pipeline (ADR-003 D1/D3).
 RoutineFactory = Callable[[httpx.AsyncClient, str, dict[str, Any]], Pipeline]
@@ -39,10 +40,11 @@ class UnknownRoutineError(KeyError):
         return str(self.args[0])
 
 
-# The catalogue. ``explore`` is the first entry; ``follow-user`` is added in
-# Phase 6b (it requires net-new perception/world-model/planner layers).
+# The catalogue. ``explore`` is pure wiring of existing layers; ``follow-user``
+# (Phase 6b) adds net-new vision perception, target world model, and pursuit planner.
 ROUTINES: dict[str, RoutineFactory] = {
     "explore": build_explore,
+    "follow-user": build_follow_user,
 }
 
 

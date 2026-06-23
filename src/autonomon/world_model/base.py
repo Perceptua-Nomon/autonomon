@@ -5,26 +5,32 @@ from __future__ import annotations
 import asyncio
 from abc import ABC, abstractmethod
 
+from autonomon.messages import PerceptionEvent, WorldStateUpdate
+
 
 class WorldModelBase(ABC):
     """Consumes PerceptionEvents and maintains current world state.
 
-    Reads PerceptionEvent dicts from queue_in, updates internal state,
-    and emits WorldStateUpdate dicts to queue_out only when state changes.
-    Delta-based emission keeps the Planning layer from being flooded with
-    no-op updates.
+    Reads :class:`PerceptionEvent` instances from queue_in, updates internal
+    state, and emits :class:`WorldStateUpdate` instances to queue_out only when
+    state changes. Delta-based emission keeps the Planning layer from being
+    flooded with no-op updates.
     """
 
     @abstractmethod
-    async def run(self, queue_in: asyncio.Queue, queue_out: asyncio.Queue) -> None:  # type: ignore[type-arg]
+    async def run(
+        self,
+        queue_in: asyncio.Queue[PerceptionEvent],
+        queue_out: asyncio.Queue[WorldStateUpdate],
+    ) -> None:
         """Process perception events and emit world state updates until stopped.
 
         Parameters
         ----------
-        queue_in : asyncio.Queue
-            Source of PerceptionEvent dicts from the Perception layer.
-        queue_out : asyncio.Queue
-            Receives WorldStateUpdate.to_dict() items.
+        queue_in : asyncio.Queue[PerceptionEvent]
+            Source of PerceptionEvents from the Perception layer.
+        queue_out : asyncio.Queue[WorldStateUpdate]
+            Receives WorldStateUpdate instances.
         """
 
     @abstractmethod
