@@ -16,7 +16,7 @@ from typing import Any
 import httpx
 
 from autonomon.action.vehicle import VehicleAction
-from autonomon.fan_in import FanInSlot, MergeStrategy
+from autonomon.fan_in import FanInSlot
 from autonomon.perception.perceptron import Perceptron
 from autonomon.pipeline import Pipeline
 from autonomon.planning.avoidance import AvoidancePlanner
@@ -133,9 +133,9 @@ def build_explore(
             ~30).
         ``cliff_detection`` : bool
             When truthy (**the default**), a ``Perceptron.grayscale`` source is
-            added beside the ultrasonic source via a ``FanInSlot`` (PASS_THROUGH),
-            enabling the world model's cliff fusion. Set false to drive on the
-            ultrasonic sensor alone.
+            added beside the ultrasonic source via a ``FanInSlot``, enabling the
+            world model's cliff fusion. Set false to drive on the ultrasonic
+            sensor alone.
 
     Returns
     -------
@@ -151,7 +151,6 @@ def build_explore(
         perception = FanInSlot(
             "perception",
             [ultrasonic, Perceptron.grayscale(client, device_id)],
-            MergeStrategy.PASS_THROUGH,
         )
     else:
         perception = ultrasonic
@@ -162,9 +161,10 @@ def build_explore(
     world_model_kwargs["obstacle_threshold_cm"] = params.get(
         "obstacle_threshold_cm", _DEFAULT_OBSTACLE_THRESHOLD_CM
     )
-    # Applied unconditionally so the routine's more sensitive cliff default (0.3,
-    # vs the world model's firmware-matching 0.7) takes effect when the param is
-    # absent — edges read well below 0.7 in practice.
+    # Applied unconditionally so the routine's raw-ADC cliff default (200) takes
+    # effect when the param is absent. On this hardware a floor reads high
+    # (~400-900) and an edge reads low (~30), so a cliff is a reading at or below
+    # the threshold (see ObstacleWorldModel and the grayscale polarity note).
     world_model_kwargs["cliff_threshold"] = params.get("cliff_threshold", _DEFAULT_CLIFF_THRESHOLD)
 
     planner_kwargs: dict[str, Any] = {"device_id": device_id}

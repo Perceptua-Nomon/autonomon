@@ -1,8 +1,12 @@
-"""JSON message types for inter-layer communication.
+"""Message types for inter-layer communication.
 
-All types are JSON-serialisable dataclasses passed through asyncio.Queue[dict]
-between layers. Use to_dict() when writing to a queue; use from_dict() when
-reading. This keeps queues typed as Queue[dict] for easy NDJSON serialisation.
+The four layers pass these dataclass **instances** directly through their typed
+``asyncio.Queue`` channels (e.g. ``asyncio.Queue[PerceptionEvent]``) — the
+in-process pipeline keeps full typing and skips a per-hop serialisation round-trip.
+
+``to_dict()`` / ``from_dict()`` remain for the **serialisation boundaries**:
+forwarding lifecycle/telemetry to nomothetic, NDJSON logging, and test fixtures.
+They are JSON-serialisable so any message can still be logged or sent verbatim.
 """
 
 from __future__ import annotations

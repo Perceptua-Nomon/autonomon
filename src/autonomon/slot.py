@@ -1,8 +1,12 @@
-"""LayerSlot: wraps a single layer implementation to enable runtime hot-swap.
+"""LayerSlot: owns one layer implementation's asyncio Task and its queues.
 
-A slot owns its asyncio Task and remembers the queues it was started with.
-Calling swap() drains and stops the running implementation, then starts the
-replacement using the same queue objects — so in-flight messages are never lost.
+The :class:`~autonomon.pipeline.Pipeline` wraps every layer position in a
+``LayerSlot``. The slot builds the layer's task from the queues it is started
+with and stops it cleanly on shutdown.
+
+Runtime hot-swap (replacing a layer mid-run) was removed as unused — no routine
+swapped a layer at runtime, and the registry/factory already selects layer
+implementations per routine at wiring time. See ADR-006.
 """
 
 from __future__ import annotations
@@ -25,18 +29,17 @@ AnyLayer = Union[PerceptionBase, WorldModelBase, PlannerBase, ActionBase]
 class SlotState(enum.Enum):
     STOPPED = "stopped"
     RUNNING = "running"
-    DRAINING = "draining"
 
 
 class LayerSlot:
-    """Wraps one layer implementation; supports runtime hot-swap via swap().
+    """Owns one layer implementation and the asyncio Task running it.
 
     Parameters
     ----------
     name : str
         Slot identifier used in log messages and task names.
     impl : AnyLayer
-        Initial layer implementation.
+        Layer implementation to run.
     """
 
     def __init__(self, name: str, impl: AnyLayer) -> None:
@@ -46,7 +49,6 @@ class LayerSlot:
         self._queue_out: asyncio.Queue | None = None  # type: ignore[type-arg]
         self._task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._state = SlotState.STOPPED
-        self._swap_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -58,7 +60,7 @@ class LayerSlot:
         elif self._queue_out is None and self._queue_in is not None:
             coro = self._impl.run(self._queue_in)  # type: ignore[call-arg]  # Action
         elif self._queue_in is not None and self._queue_out is not None:
-            coro = self._impl.run(self._queue_in, self._queue_out)  # type: ignore[call-arg]  # WorldModel / Planning
+            coro = self._impl.run(self._queue_in, self._queue_out)  # type: ignore[call-arg]
         else:
             raise RuntimeError(f"Slot '{self.name}': both queue_in and queue_out are None")
         return asyncio.create_task(coro, name=self.name)
@@ -89,7 +91,7 @@ class LayerSlot:
         return self._task
 
     async def stop(self, timeout: float = 2.0) -> None:
-        """Signal the current implementation to stop and await its task.
+        """Signal the implementation to stop and await its task.
 
         Parameters
         ----------
@@ -98,7 +100,6 @@ class LayerSlot:
         """
         if self._state == SlotState.STOPPED:
             return
-        self._state = SlotState.DRAINING
         try:
             await self._impl.stop()
         except Exception:
@@ -114,29 +115,6 @@ class LayerSlot:
                     pass
         self._state = SlotState.STOPPED
         logger.debug("slot '%s' stopped", self.name)
-
-    async def swap(self, new_impl: AnyLayer, drain_timeout: float = 2.0) -> None:
-        """Replace the running implementation without stopping the pipeline.
-
-        The queues assigned at start() are reused. In-flight messages already
-        queued remain intact and will be consumed by the downstream layer as
-        normal. The old implementation's stop() is called before the new one
-        starts.
-
-        Parameters
-        ----------
-        new_impl : AnyLayer
-            Replacement implementation (must be the same layer type).
-        drain_timeout : float
-            Seconds to wait for the old implementation to exit cleanly.
-        """
-        async with self._swap_lock:
-            logger.info("slot '%s': swapping implementation", self.name)
-            await self.stop(timeout=drain_timeout)
-            self._impl = new_impl
-            self._task = self._make_task()
-            self._state = SlotState.RUNNING
-            logger.info("slot '%s': swap complete", self.name)
 
     # ------------------------------------------------------------------
     # Properties

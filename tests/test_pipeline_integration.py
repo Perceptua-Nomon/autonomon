@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from autonomon import Pipeline, VehicleAction, get_routine
+from autonomon import ActionResult, Pipeline, VehicleAction, get_routine
 
 
 def _response(json_body: dict[str, Any]) -> MagicMock:
@@ -89,7 +89,7 @@ async def _run_until_first_result(pipeline: Pipeline, results: asyncio.Queue) ->
 @pytest.mark.asyncio
 async def test_near_obstacle_triggers_avoidance_commands() -> None:
     client = _device_client(distance_cm=10.0)  # well below the 20 cm threshold
-    results: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    results: asyncio.Queue[ActionResult] = asyncio.Queue()
 
     await _run_until_first_result(_build_pipeline(client, results), results)
 
@@ -106,7 +106,7 @@ async def test_cliff_triggers_avoidance_with_clear_path() -> None:
     # command an avoidance stop. Regression guard for the sensor-polarity bug,
     # where holding the robot over an edge (a LOW reading) produced no stop.
     client = _device_client(distance_cm=200.0, gray_values=[500, 30, 500])
-    results: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    results: asyncio.Queue[ActionResult] = asyncio.Queue()
 
     await _run_until_first_result(_build_pipeline(client, results), results)
 
@@ -117,7 +117,7 @@ async def test_cliff_triggers_avoidance_with_clear_path() -> None:
 @pytest.mark.asyncio
 async def test_clear_path_cruises_forward() -> None:
     client = _device_client(distance_cm=200.0)  # far away → no obstacle
-    results: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    results: asyncio.Queue[ActionResult] = asyncio.Queue()
 
     await _run_until_first_result(_build_pipeline(client, results), results)
 
@@ -132,7 +132,7 @@ async def test_clear_path_cruises_forward() -> None:
 @pytest.mark.asyncio
 async def test_pipeline_shuts_down_cleanly() -> None:
     client = _device_client(distance_cm=10.0)
-    results: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    results: asyncio.Queue[ActionResult] = asyncio.Queue()
     pipeline = _build_pipeline(client, results)
 
     await _run_until_first_result(pipeline, results)

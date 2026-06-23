@@ -42,8 +42,8 @@ class _StubWorldModel(WorldModelBase):
             try:
                 msg = await asyncio.wait_for(queue_in.get(), timeout=0.05)
                 self.received.append(msg)
-                state = WorldStateUpdate(timestamp="t", device_id="test", state={"raw": msg})
-                await queue_out.put(state.to_dict())
+                state = WorldStateUpdate(timestamp="t", device_id="test", state={"raw": str(msg)})
+                await queue_out.put(state)
             except asyncio.TimeoutError:
                 pass
 
@@ -62,7 +62,7 @@ class _StubPlanner(PlannerBase):
                 msg = await asyncio.wait_for(queue_in.get(), timeout=0.05)
                 self.received.append(msg)
                 plan = ActionPlan(timestamp="t", device_id="test", plan_id="p1", actions=[])
-                await queue_out.put(plan.to_dict())
+                await queue_out.put(plan)
             except asyncio.TimeoutError:
                 pass
 
@@ -92,7 +92,7 @@ async def test_pipeline_routes_messages_end_to_end() -> None:
     event = PerceptionEvent(
         timestamp="2026-01-01T00:00:00Z", device_id="nomon-test", sensor_type="test", data={}
     )
-    perception = _StubPerception([event.to_dict()])
+    perception = _StubPerception([event])
     world_model = _StubWorldModel()
     planner = _StubPlanner()
     action = _StubAction()
@@ -106,11 +106,11 @@ async def test_pipeline_routes_messages_end_to_end() -> None:
     await asyncio.gather(pipeline.run(), _run_and_stop(), return_exceptions=True)
 
     assert len(world_model.received) >= 1
-    assert world_model.received[0]["type"] == "perception_event"
+    assert world_model.received[0].type == "perception_event"
     assert len(planner.received) >= 1
-    assert planner.received[0]["type"] == "world_state_update"
+    assert planner.received[0].type == "world_state_update"
     assert len(action.received) >= 1
-    assert action.received[0]["type"] == "action_plan"
+    assert action.received[0].type == "action_plan"
 
 
 @pytest.mark.asyncio
@@ -126,23 +126,3 @@ async def test_pipeline_stops_cleanly() -> None:
     # All slot tasks should be done after stop
     for slot in pipeline._slots.values():
         assert all(t.done() for t in slot.tasks)
-
-
-@pytest.mark.asyncio
-async def test_pipeline_swap_layer() -> None:
-    perception1 = _StubPerception([])
-    perception2 = _StubPerception([])
-    world_model = _StubWorldModel()
-    planner = _StubPlanner()
-    action = _StubAction()
-
-    pipeline = Pipeline(perception1, world_model, planner, action)
-
-    async def _swap_then_stop() -> None:
-        await asyncio.sleep(0.1)
-        await pipeline.swap_layer("perception", perception2)
-        await asyncio.sleep(0.1)
-        await pipeline.stop()
-
-    await asyncio.gather(pipeline.run(), _swap_then_stop(), return_exceptions=True)
-    assert pipeline._slots["perception"].impl is perception2  # type: ignore[union-attr]

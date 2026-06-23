@@ -39,6 +39,15 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.0",
 ]
+# Vision stack for the `follow-user` routine (person detection). Kept optional and
+# lazy-imported so the core install and non-vision tests stay light. `ultralytics`
+# (AGPL) is NOT a runtime dep — it is used only offline to export the YOLOv8n ONNX
+# model that this stack runs via onnxruntime.
+vision = [
+    "onnxruntime>=1.17",
+    "numpy>=1.24",
+    "pillow>=10.0",
+]
 
 [project.scripts]
 nomon-autonomon = "autonomon.routines.cli:main"

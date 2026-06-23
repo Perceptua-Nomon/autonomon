@@ -5,26 +5,29 @@ from __future__ import annotations
 import asyncio
 from abc import ABC, abstractmethod
 
+from autonomon.messages import ActionPlan
+
 
 class ActionBase(ABC):
     """Executes ActionPlans by calling the nomothetic REST API.
 
-    Reads ActionPlan dicts from queue_in, calls the appropriate nomothetic
-    endpoints for each action in priority order, and emits ActionResult dicts
-    describing success or failure. This is the only layer permitted to make
-    outbound HTTP calls that mutate device state.
+    Reads :class:`ActionPlan` instances from queue_in, calls the appropriate
+    nomothetic endpoints for each action in priority order, and produces
+    ActionResults describing success or failure. This is the only layer
+    permitted to make outbound HTTP calls that mutate device state.
 
-    Implementations receive the device URL and auth token at construction time.
+    Implementations receive a pre-configured ``httpx.AsyncClient`` at
+    construction time (per ADR-002).
     """
 
     @abstractmethod
-    async def run(self, queue_in: asyncio.Queue) -> None:  # type: ignore[type-arg]
+    async def run(self, queue_in: asyncio.Queue[ActionPlan]) -> None:
         """Execute action plans until stopped.
 
         Parameters
         ----------
-        queue_in : asyncio.Queue
-            Source of ActionPlan dicts from the Planning layer.
+        queue_in : asyncio.Queue[ActionPlan]
+            Source of ActionPlans from the Planning layer.
         """
 
     @abstractmethod

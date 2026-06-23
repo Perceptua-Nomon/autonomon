@@ -190,20 +190,20 @@ class Perceptron(PerceptionBase):
     # PerceptionBase implementation
     # ------------------------------------------------------------------
 
-    async def run(self, queue_out: asyncio.Queue) -> None:  # type: ignore[type-arg]
+    async def run(self, queue_out: asyncio.Queue[PerceptionEvent]) -> None:
         """Poll the configured endpoint and emit PerceptionEvents until stopped.
 
         Parameters
         ----------
-        queue_out : asyncio.Queue
-            Receives ``PerceptionEvent.to_dict()`` items. The ``sensor_type``
-            and ``data`` fields are set by this instance's configuration.
+        queue_out : asyncio.Queue[PerceptionEvent]
+            Receives ``PerceptionEvent`` instances. The ``sensor_type`` and
+            ``data`` fields are set by this instance's configuration.
         """
         while not self._stop.is_set():
             await self._poll(queue_out)
             await self._interruptible_sleep(self._poll_interval_s)
 
-    async def _poll(self, queue_out: asyncio.Queue) -> None:  # type: ignore[type-arg]
+    async def _poll(self, queue_out: asyncio.Queue[PerceptionEvent]) -> None:
         try:
             resp = await asyncio.wait_for(
                 self._client.get(self._endpoint),
@@ -217,7 +217,7 @@ class Perceptron(PerceptionBase):
                 sensor_type=self._sensor_type,
                 data=self._interpreter(body),
             )
-            await queue_out.put(event.to_dict())
+            await queue_out.put(event)
         except asyncio.TimeoutError:
             logger.warning("%s poll timed out after %.1f s", self._sensor_type, self._timeout_s)
         except httpx.RequestError as exc:

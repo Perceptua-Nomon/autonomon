@@ -217,3 +217,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Vision models (fetched/exported via scripts/fetch_model.sh, not committed)
+models/
+*.onnx

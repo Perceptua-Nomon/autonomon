@@ -79,8 +79,8 @@ autonomon/
     ├── __init__.py       Exports all public surface
     ├── messages.py       PerceptionEvent, WorldStateUpdate, ActionPlan, ActionResult
     ├── pipeline.py       Pipeline — connects layers with asyncio queues
-    ├── slot.py           LayerSlot, SlotState — runtime hot-swap of one layer
-    ├── fan_in.py         FanInSlot, MergeStrategy — N impls at one position
+    ├── slot.py           LayerSlot, SlotState — owns one layer's task + queues
+    ├── fan_in.py         FanInSlot — multi-source perception fan-in (pass-through)
     ├── perception/
     │   ├── __init__.py
     │   ├── base.py       PerceptionBase abstract class
@@ -150,8 +150,15 @@ async with httpx.AsyncClient(
 | Constructor | Endpoint | `data` payload | Default poll |
 |-------------|----------|----------------|--------------|
 | `Perceptron.ultrasonic` | `GET /api/sensor/ultrasonic` | `{"distance_cm": float \| None}` | 0.1 s |
-| `Perceptron.grayscale` | `GET /api/sensor/grayscale/normalized` | `{"channels": [...], "normalized": [...]}` | 0.1 s |
+| `Perceptron.grayscale` | `GET /api/sensor/grayscale` | `{"channels": [...], "values": [...]}` (raw ADC) | 0.1 s |
 | `Perceptron.battery` | `GET /api/hat/battery` | `{"voltage_v": float}` | 30 s |
+
+> **Grayscale uses raw ADC, not `/normalized`.** On this hardware the downward
+> sensors read *inverted* relative to the normalisation calibration: a reflective
+> floor reads **high** (~400-900 raw) and a drop-off / no surface reads **low**
+> (~30). So a cliff is a *low* reading, and `ObstacleWorldModel` thresholds the
+> raw `values` (default 200). The `/api/sensor/grayscale/normalized` endpoint
+> would compress this signal with the opposite-polarity assumption.
 
 For any other source, construct `Perceptron(client, device_id, sensor_type=...,
 endpoint=..., interpreter=...)` directly. The HTTP client (pre-configured with
@@ -196,7 +203,11 @@ to the (mock) device.
 
 ## Message Types
 
-All messages are JSON-serialisable dataclasses passed through `asyncio.Queue[dict]` between layers within a process. Can also be serialised to NDJSON for inter-process pipelines.
+All messages are dataclasses passed as **typed instances** through the layers'
+`asyncio.Queue` channels within a process (e.g. `asyncio.Queue[PerceptionEvent]`) —
+keeping full typing and skipping a per-hop serialisation round-trip. They remain
+JSON-serialisable via `to_dict()` for the **serialisation boundaries**: telemetry
+to nomothetic, NDJSON logging, and test fixtures (ADR-006).
 
 ### `PerceptionEvent`
 
@@ -245,10 +256,9 @@ Emitted by the Planning layer when a new plan is selected.
   "device_id": "nomon-ab12",
   "plan_id": "avoid-001",
   "actions": [
-    {"method": "stop",          "params": {},                    "priority": 0},
-    {"method": "drive",         "params": {"speed": -30},        "priority": 1},
-    {"method": "steer",         "params": {"angle": 135},        "priority": 2},
-    {"method": "drive",         "params": {"speed": 30},         "priority": 3}
+    {"method": "stop",          "params": {},                       "priority": 0},
+    {"method": "drive",         "params": {"speed_pct": -30},       "priority": 1},
+    {"method": "steer",         "params": {"angle_deg": 135},       "priority": 2}
   ]
 }
 ```
@@ -272,78 +282,61 @@ Emitted by the Action layer after executing each action.
 
 ---
 
-## Inter-Layer Communication and Hot-Swap
+## Inter-Layer Communication
 
-Layers communicate via `asyncio.Queue[dict]` populated with JSON-serialisable dicts. The `Pipeline` class wires up the queues and starts each layer as an asyncio task:
+Layers communicate via typed `asyncio.Queue` channels carrying message
+**instances** (e.g. `asyncio.Queue[PerceptionEvent]`). The `Pipeline` class wires
+up the queues and starts each layer as an asyncio task:
 
 ```python
 pipeline = Pipeline(
-    perception=MyPerception(device_url, token),
+    perception=MyPerception(client, device_id),
     world_model=MyWorldModel(),
     planner=MyPlanner(config),
-    action=MyAction(device_url, token),
+    action=MyAction(client, device_id),
 )
 await pipeline.run()
 ```
 
 Each queue has a bounded capacity (default 32) to create back-pressure: if the action layer falls behind, the planner pauses; if the planner pauses, the world model pauses; if the world model pauses, perception slows its polling.
 
-### Hot-Swap: replacing one layer at runtime
+Each layer position is owned by a `LayerSlot` that holds the asyncio Task and the
+queues it was started with. `Pipeline.run()` starts every slot, then awaits the
+tasks; `Pipeline.stop()` (also run in `run()`'s `finally`) stops them in order.
 
-Each layer position is managed by a `LayerSlot` that owns the asyncio Task. The queues are attached to the slot, not the task — so swapping the implementation keeps the queues intact and in-flight messages are never lost.
+### Multi-source perception fan-in
 
-```python
-# Swap YOLO for a different vision model mid-run
-await pipeline.swap_layer("perception", new_vision_model)
-```
-
-The state machine: `stop()` on old impl → await its task (drain_timeout, default 2 s) → create new task for new impl on the **same queues**. The other three layers never pause.
-
-### Multi-source fan-in: N implementations at one position
-
-Pass a `FanInSlot` instead of a single implementation to run N concurrent sources at one layer position.
-
-**Perception fan-in (PASS_THROUGH):** Both sources write to the same downstream queue. Back-pressure applies to all sources: when the queue fills, all sources pause.
+Pass a `FanInSlot` as the `perception` argument to run several sensor sources
+concurrently onto one downstream queue. All sources share that queue, so
+back-pressure pauses them together — e.g. ultrasonic + grayscale for the
+`explore` routine:
 
 ```python
-from autonomon import FanInSlot, MergeStrategy
+from autonomon import FanInSlot, Perceptron
 
 pipeline = Pipeline(
     perception=FanInSlot(
         "perception",
-        [YoloPerception(client, device_id), Perceptron.ultrasonic(client, device_id)],
-        MergeStrategy.PASS_THROUGH,
+        [Perceptron.ultrasonic(client, device_id), Perceptron.grayscale(client, device_id)],
     ),
-    world_model=MyWorldModel(),
-    planner=MyPlanner(config),
-    action=MyAction(client, device_id),
+    world_model=ObstacleWorldModel(device_id),
+    planner=AvoidancePlanner(device_id),
+    action=VehicleAction(client, device_id),
 )
 ```
 
-**Planning fan-in (ARBITRATE):** A dispatcher copies each `WorldStateUpdate` to both planners; each planner writes its plan to an internal arbiter queue; within a configurable window (default 50 ms), an arbiter function selects the best plan and forwards it to the Action layer.
+`FanInSlot` is a Perception-position construct (it has no upstream queue to fan
+out). It is the only multi-source composition autonomon provides.
 
-```python
-pipeline = Pipeline(
-    perception=MyPerception(device_url, token),
-    world_model=MyWorldModel(),
-    planner=FanInSlot(
-        "planner",
-        [RulePlanner(rules), LLMPlanner(model)],
-        MergeStrategy.ARBITRATE,
-        arbiter=pick_highest_confidence_plan,
-        arbitration_window_ms=50,
-    ),
-    action=MyAction(device_url, token),
-)
-```
-
-**Dynamic add/remove:** Sources can be added or removed from a running `FanInSlot` without restarting the pipeline.
-
-```python
-fan_in_slot = pipeline._slots["perception"]  # FanInSlot
-await fan_in_slot.add_impl(new_sensor)
-await fan_in_slot.remove_impl(old_sensor)
-```
+> **Removed as speculative (ADR-006).** Runtime layer hot-swap
+> (`Pipeline.swap_layer` / `LayerSlot.swap`) and competing-planner fan-in
+> arbitration (`MergeStrategy.ARBITRATE`, an arbiter window, and dynamic
+> `add_impl`/`remove_impl`) were removed — no routine used them, and the
+> arbitration path carried a latent bug. The "swap an implementation" capability
+> that routines actually use is **wiring-time selection**: each routine factory
+> chooses the layer implementations it needs (`explore` vs `follow-user`). If
+> real-time competing planners are ever required, reintroduce that as a dedicated
+> slot with its own ADR.
 
 ---
 
@@ -353,19 +346,23 @@ Each layer is an `asyncio` coroutine that reads from `queue_in`, processes, and 
 
 ```python
 class PerceptionBase(ABC):
-    async def run(self, queue_out: asyncio.Queue[dict]) -> None: ...
+    async def run(self, queue_out: asyncio.Queue[PerceptionEvent]) -> None: ...
     async def stop(self) -> None: ...
 
 class WorldModelBase(ABC):
-    async def run(self, queue_in: asyncio.Queue[dict], queue_out: asyncio.Queue[dict]) -> None: ...
+    async def run(
+        self, queue_in: asyncio.Queue[PerceptionEvent], queue_out: asyncio.Queue[WorldStateUpdate]
+    ) -> None: ...
     async def stop(self) -> None: ...
 
 class PlannerBase(ABC):
-    async def run(self, queue_in: asyncio.Queue[dict], queue_out: asyncio.Queue[dict]) -> None: ...
+    async def run(
+        self, queue_in: asyncio.Queue[WorldStateUpdate], queue_out: asyncio.Queue[ActionPlan]
+    ) -> None: ...
     async def stop(self) -> None: ...
 
 class ActionBase(ABC):
-    async def run(self, queue_in: asyncio.Queue[dict]) -> None: ...
+    async def run(self, queue_in: asyncio.Queue[ActionPlan]) -> None: ...
     async def stop(self) -> None: ...
 ```
 
@@ -515,14 +512,17 @@ never to add processing of data already served.
 
 | Layer | Direction | Endpoints called |
 |-------|-----------|-----------------|
-| Perception | raw in | `GET /api/sensor/ultrasonic`, `GET /api/sensor/grayscale/normalized`, `GET /api/hat/battery` |
+| Perception (sensors) | raw in | `GET /api/sensor/ultrasonic`, `GET /api/sensor/grayscale` (raw ADC), `GET /api/hat/battery` |
+| Perception (vision, `follow-user`) | raw in | `GET /api/camera/frame` → `image/jpeg` (single raw frame) |
 | Action | actions out | `POST /api/drive`, `POST /api/steer`, `POST /api/hat/motor/stop` |
 
-**Raw inputs available but not yet consumed:** `POST /api/camera/capture` and
-the MJPEG stream serve raw camera frames. Per ADR-004 the `follow-user` routine
-(Phase 6b) consumes these frames and runs person detection **inside an autonomon
-vision perception layer** — it does *not* call a nomothetic detection endpoint,
-because none exists or should.
+**Raw camera frames (`follow-user`, Phase 6b):** `GET /api/camera/frame` returns a
+single raw JPEG (`image/jpeg`). Note `POST /api/camera/capture` writes a file to
+disk and returns metadata only — it does *not* return frame bytes — so the frame
+endpoint was added as a small *raw input* (ADR-004-legal). The `follow-user`
+routine polls this endpoint and runs person detection **inside its autonomon
+vision perception layer** (ONNX Runtime + YOLOv8n) — it does *not* call a
+nomothetic detection endpoint, because none exists or should.
 
 All calls use device-scoped JWT (`NOMON_PLUGIN_TOKEN`) in the `Authorization: Bearer` header. TLS verification is skipped for self-signed device certs (`verify=False` on httpx, documented in ADR-001 of nomothetic).
 

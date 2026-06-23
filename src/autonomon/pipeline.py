@@ -1,16 +1,15 @@
 """Pipeline: wires the four layers together via LayerSlot instances.
 
-Each layer position in the pipeline is a LayerSlot (or FanInSlot) that owns
-its asyncio Task. Queues are created once in run() and persist for the life
-of the pipeline — allowing hot-swap via swap_layer() without losing in-flight
-messages.
+Each layer position is a LayerSlot (or, at the Perception position, a FanInSlot)
+that owns its asyncio Task. Queues are created once in run() and connect adjacent
+layers with bounded back-pressure.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Literal, Union
+from typing import Union
 
 from autonomon.action.base import ActionBase
 from autonomon.fan_in import FanInSlot
@@ -44,16 +43,15 @@ class Pipeline:
     planner pauses; if the planner pauses, the world model pauses; if the
     world model pauses, perception slows its polling rate.
 
-    To run multiple implementations at one position (e.g. YOLO + ultrasonic
-    as concurrent perception sources), pass a FanInSlot instead of a single
-    implementation.
+    To run multiple perception sources at once (e.g. ultrasonic + grayscale),
+    pass a FanInSlot as ``perception`` instead of a single implementation.
 
     Parameters
     ----------
     perception : PerceptionBase or FanInSlot
-    world_model : WorldModelBase or FanInSlot
-    planner : PlannerBase or FanInSlot
-    action : ActionBase or FanInSlot
+    world_model : WorldModelBase
+    planner : PlannerBase
+    action : ActionBase
     queue_size : int
         Capacity of each inter-layer queue.
     """
@@ -106,45 +104,3 @@ class Pipeline:
         for slot in self._slots.values():
             await slot.stop(timeout=timeout)
         logger.info("pipeline stopped")
-
-    async def swap_layer(
-        self,
-        position: Literal["perception", "world_model", "planner", "action"],
-        new_impl: AnyLayer,
-        drain_timeout: float = 2.0,
-    ) -> None:
-        """Replace one layer's implementation without stopping the pipeline.
-
-        In-flight messages already queued between layers are preserved.
-        The old implementation's stop() is called before the new one starts.
-
-        Note: swapping a WorldModelBase loses its accumulated state. If
-        continuity matters, initialise the replacement with a state snapshot
-        before calling swap_layer.
-
-        Parameters
-        ----------
-        position : str
-            Which layer to replace: "perception", "world_model", "planner",
-            or "action".
-        new_impl : AnyLayer
-            Replacement implementation (must satisfy the same base class).
-        drain_timeout : float
-            Seconds to wait for the old implementation to exit cleanly.
-
-        Raises
-        ------
-        KeyError
-            If position is not a valid layer name.
-        TypeError
-            If the slot at position is a FanInSlot; use add_impl/remove_impl
-            on the FanInSlot directly for dynamic multi-source changes.
-        """
-        slot = self._slots[position]
-        if isinstance(slot, FanInSlot):
-            raise TypeError(
-                f"Position '{position}' is a FanInSlot. "
-                "Use FanInSlot.add_impl() / remove_impl() to modify it at runtime."
-            )
-        await slot.swap(new_impl, drain_timeout=drain_timeout)
-        logger.info("pipeline: '%s' layer swapped to %s", position, type(new_impl).__name__)

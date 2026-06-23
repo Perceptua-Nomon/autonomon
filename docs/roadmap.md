@@ -7,13 +7,21 @@
 | 0 | nomon_explore plugin (pre-framework) | ✅ Complete |
 | 1 | Core framework (`autonomon` package) | ✅ Complete |
 | 2 | Perception implementations (ultrasonic, grayscale, battery) | ✅ Complete |
-| 3 | Occupancy-grid world model | 🟡 Minimal slice (`ObstacleWorldModel`); occupancy grid pending |
-| 4 | Rule-based planner | 🟡 Minimal slice (`AvoidancePlanner`); rule-table/TOML pending |
-| 5 | Vehicle action executor | 🟡 Minimal slice (`VehicleAction`); retry/backoff + safety-stop pending |
+| 3 | Occupancy-grid world model | ⏸️ Deferred — speculative (no consumer; the `ObstacleWorldModel` slice suffices) |
+| 4 | Rule-based planner (rule-table/TOML) | ⏸️ Deferred — speculative (no consumer; the `AvoidancePlanner` slice suffices) |
+| 5 | Vehicle action executor — retry + safety-stop | ✅ Complete |
 | 6 | Routine registry (`explore` as first entry) | ✅ Complete |
-| 6b | `follow-user` routine (new perception/world-model/planner) | 🔲 Planned |
-| 6c | Device deployment & integration testing | 🟡 In progress (scripts + CI done; integration test pending) |
-| 7 | Autonomy telemetry to ArcadeDB | 🔲 Planned |
+| 6b | `follow-user` vision routine (camera + person detection) | ✅ Complete |
+| 6c | Device deployment & integration testing | ✅ Complete |
+| 7 | Autonomy telemetry to ArcadeDB | ⏸️ Deferred — needs device→central transport/auth design |
+
+> **Lean core (ADR-006).** Runtime layer hot-swap (`Pipeline.swap_layer` /
+> `LayerSlot.swap`) and competing-planner fan-in arbitration (`MergeStrategy.ARBITRATE`,
+> dynamic `add_impl`/`remove_impl`) were **removed** as speculative machinery with no
+> routine consumer. The "swappable models" capability is preserved by the routine
+> registry/factory (each routine wires the layer implementations it needs) and by
+> multi-source perception fan-in (`FanInSlot`, pass-through). Inter-layer queues now
+> carry **typed message instances** rather than dicts. See ADR-006.
 
 > **Vertical slice (current):** A minimal concrete implementation of every layer
 > now exists, and `tests/test_pipeline_integration.py` runs the full
@@ -75,7 +83,7 @@ modeling; no autonomy logic is ever pushed down into nomothetic or nomopractic.
 - `autonomon` package with `autonomon.messages`: `PerceptionEvent`, `WorldStateUpdate`, `ActionPlan`, `ActionResult` dataclasses with `to_dict()` / `from_dict()`
 - Layer base classes: `PerceptionBase` (`run(queue_out)`), `WorldModelBase` / `PlannerBase` (`run(queue_in, queue_out)`), `ActionBase` (`run(queue_in)`), each with `stop()`
 - `autonomon.pipeline.Pipeline`: wires layers with bounded asyncio queues and graceful shutdown
-- Runtime hot-swap (`autonomon.slot.LayerSlot`, `SlotState`) and multi-source fan-in (`autonomon.fan_in.FanInSlot`, `MergeStrategy` — `PASS_THROUGH` / `ARBITRATE`)
+- Per-layer task ownership (`autonomon.slot.LayerSlot`, `SlotState`) and multi-source perception fan-in (`autonomon.fan_in.FanInSlot`, pass-through). (Runtime hot-swap and planner arbitration were later removed — ADR-006.)
 - pytest suite covering pipeline wiring, back-pressure, hot-swap, and fan-in
 - `docs/architecture.md`, `docs/roadmap.md`, `docs/adr/001-layered-architecture.md`, `docs/adr/002-rest-api-client-pattern.md`
 
@@ -89,7 +97,7 @@ modeling; no autonomy logic is ever pushed down into nomothetic or nomopractic.
 - `autonomon.perception.Perceptron`: a single configurable perception class declaring `sensor_type` + `endpoint` + `interpreter`, sharing all polling, timeout, error-handling, and stop logic
 - Built-in sensors defined in one declarative `_SENSOR_SPECS` table, exposed via named constructors:
   - `Perceptron.ultrasonic` → `GET /api/sensor/ultrasonic`; emits `data={"distance_cm": float | None}`
-  - `Perceptron.grayscale` → `GET /api/sensor/grayscale/normalized`; emits `data={"channels": [...], "normalized": [...]}`
+  - `Perceptron.grayscale` → `GET /api/sensor/grayscale`; emits `data={"channels": [...], "values": [...]}` — **raw** ADC counts. The raw endpoint (not `/normalized`) is used deliberately: this hardware reads inverted vs the normalisation calibration, so a cliff is a *low* raw reading (floor ~400-900, edge ~30; threshold 200). See the World Model section and `ObstacleWorldModel`.
   - `Perceptron.battery` → `GET /api/hat/battery`; emits `data={"voltage_v": float}`
 - Configurable poll interval and per-request timeout per instance (battery defaults to 30 s; others 0.1 s)
 - Custom sensors via the general `Perceptron(...)` constructor with a user-supplied interpreter
@@ -104,36 +112,38 @@ modeling; no autonomy logic is ever pushed down into nomothetic or nomopractic.
 
 ### Phase 3 — Occupancy-Grid World Model
 
-**Goal:** Fuse sensor events into a spatial world state.
+**Status:** ⏸️ **Deferred (speculative — no consumer).** No current or planned routine
+needs a spatial occupancy grid: `explore` uses boolean obstacle/cliff state, and
+`follow-user` uses a target's relative bearing/range. A grid serves mapping /
+path-planning behaviours that are not on the roadmap; building it now would be
+speculative generality. Revisit when a routine actually needs spatial mapping.
 
-**Done (minimal slice):**
+**Done (and sufficient for current routines):**
 - `autonomon.world_model.ObstacleWorldModel`: threshold-based fusion of ultrasonic
   (`obstacle_ahead`) and grayscale (`cliff_detected`) into a small boolean state
 - Delta-based `WorldStateUpdate` emission; first observation emitted as a baseline
   so the planner always has an initial state
 
-**Remaining (full version):**
+**Deferred (build only when a consumer exists):**
 - `OccupancyWorldModel`: spatial occupancy grid (not just boolean flags)
-- Battery state tracking
 - Configurable state decay (obstacles age out after N seconds without new readings)
-- Serialisable to JSON for logging and telemetry
 
 ---
 
-### Phase 4 — Rule-Based Planner
+### Phase 4 — Rule-Based Planner (rule-table / TOML)
 
-**Goal:** Deterministic planner driven by a priority-ordered rule set.
+**Status:** ⏸️ **Deferred (speculative — no consumer).** `AvoidancePlanner` already
+covers `explore`, and `follow-user` uses a dedicated pursuit planner, not a rule
+table. A generic TOML-loadable rule engine is config infrastructure for a second
+rule-based behaviour that does not yet exist. Revisit when one does.
 
-**Done (minimal slice):**
-- `autonomon.planning.AvoidancePlanner`: two hard-coded rules (avoid on
-  obstacle/cliff → stop+reverse+steer; otherwise cruise forward)
-- Debounce: emits a new `ActionPlan` only when the selected strategy changes
+**Done (and sufficient for current routines):**
+- `autonomon.planning.AvoidancePlanner`: two rules (avoid on obstacle/cliff →
+  stop+reverse+steer; otherwise cruise forward); debounced on the selected strategy
 
-**Remaining (full version):**
-- `RulePlanner`: evaluates world state against an ordered rule table
-- Rule format: `{"condition": {...}, "actions": [...], "priority": 0}`
-- Rules loadable from TOML or passed at construction
-- Test coverage for all standard nomon_explore avoidance cases
+**Deferred (build only when a second rule-based routine exists):**
+- `RulePlanner`: evaluates world state against an ordered rule table, loadable from
+  TOML (`{"condition": {...}, "actions": [...], "priority": 0}`)
 
 ---
 
@@ -148,9 +158,11 @@ modeling; no autonomy logic is ever pushed down into nomothetic or nomopractic.
   action with success/error; best-effort telemetry seam via an optional results queue
 - Absorbs transient HTTP/timeout errors without stopping the layer
 
-**Remaining (full version):**
-- Configurable retry with exponential backoff on transient errors
-- Safety: if nomothetic returns 5xx, emit a stop action before propagating the error
+**Done (full version):**
+- Configurable retry with exponential backoff on transient errors (timeout /
+  connection / 5xx); a 4xx is not retried; a 2xx with an unparseable body is not retried
+- Safety-stop: if a `drive`/`steer` still fails to reach the device after retries, a
+  best-effort `POST /api/hat/motor/stop` is issued before recording the failed result
 
 ---
 
@@ -204,27 +216,34 @@ wiring — it requires net-new layer implementations.
 **Reuses unchanged:** `VehicleAction` (the action layer is target-agnostic).
 
 **Net-new (the cost of a pursuit behaviour):**
-- A **vision perception implementation** — a new perception layer that pulls
-  *raw* camera frames from nomothetic (the existing `POST /api/camera/capture`
-  still or the MJPEG stream) and runs person/target detection **inside
-  autonomon**, emitting target bearing/range. Per the brain principle above,
-  the detection model (e.g. OpenCV or a TFLite person detector) is an
-  *autonomon* dependency — nomothetic only serves the raw frame.
+- A **vision perception implementation** — a new perception layer that polls
+  *raw* camera frames from nomothetic and runs person detection **inside
+  autonomon**, emitting target bearing/range. Per the brain principle above, the
+  detector is an *autonomon* dependency — nomothetic only serves the raw frame.
+  Stack: **ONNX Runtime + a YOLOv8n model** (person class), behind a swappable
+  `Detector` abstraction so CI injects a fake detector and the model can be
+  replaced. Runtime deps: `onnxruntime`, `numpy`, `pillow` (a `[vision]` extra);
+  `ultralytics` (AGPL) is used only offline to export the ONNX model, never at
+  runtime.
 - A **target world model** — a new `WorldModelBase` impl tracking the target's
-  relative position over time (not a boolean obstacle flag)
+  relative position over time (EMA smoothing, lost-target timeout), not a boolean
+  obstacle flag
 - A **pursuit planner** — a new `PlannerBase` impl that closes distance to a
-  moving target (drive toward bearing, hold a `target_distance_cm` standoff),
+  moving target (steer toward bearing, hold a `target_distance_cm` standoff),
   rather than avoiding obstacles
 - `follow-user` factory + registry entry; params: `target_distance_cm`,
-  `max_speed_pct`, plus a target-source / model selector
+  `max_speed_pct`, `confidence_threshold`, `camera_hfov_deg`,
+  `lost_target_timeout_s`, `model_path`
 
-**Dependency note:** nomothetic already exposes the only thing it needs to —
-raw camera access (`/api/camera/capture`, MJPEG stream). **No new nomothetic
-endpoint is required**; the detection model and all interpretation live in the
-autonomon vision perception layer. The open decision is *where the autonomon
-process runs* for this routine: on-device (lower latency, heavier CPU load on
-the Pi Zero 2W) vs. on a remote host (offload detection, adds frame-transfer
-bandwidth). Both honour the same boundary contract.
+**Camera frame source.** `POST /api/camera/capture` writes a JPEG to disk and
+returns metadata only — it does **not** return frame bytes. The only existing
+frame-bytes path is the MJPEG stream. So this phase adds one small raw-input
+endpoint to nomothetic: **`GET /api/camera/frame`** → `image/jpeg`, reusing the
+camera's existing in-memory JPEG capture. This is ADR-004-legal (a *raw input*,
+no interpretation) — it is the single exception to "no new nomothetic endpoint",
+chosen over multipart-MJPEG parsing because it fits the perception poll model
+exactly. The autonomon process may run on-device or on a remote host; the
+boundary contract is unchanged.
 
 ---
 
@@ -241,18 +260,20 @@ for end-to-end autonomy testing.
   `challenge`, `token`). The CLI prefers `NOMON_PLUGIN_KEY` over a static
   `NOMON_PLUGIN_TOKEN`.
 - ✅ `scripts/deploy.sh` — deploy from latest semver tag or `--local` source tree
-  via rsync; installs autonomon into nomothetic's `.venv`; optional test run;
+  via rsync; installs autonomon into its **own** venv (separate from nomothetic per
+  ADR-005); optional test run;
   verifies CLI + manifest; **generates the on-device key, writes the plugin env
   file (no token), and registers the public key over loopback**; reloads
   `nomothetic-api.service` if running; rollback on failure. Same interface
   pattern as nomothetic/nomopractic workspace scripts.
 - ✅ `.github/workflows/ci.yml` — `check` job (ruff + black + mypy + pytest with
   coverage) on push/PR to main; `release` job creates a GitHub Release on `v*` tags.
-- 🔲 Device integration test (CI job): spin up mock nomothetic, run `nomon-autonomon`
-  with the `explore` routine against a mock device, assert sensor reads → stop/drive
-  commands reach the mock. Extends the existing `test_pipeline_integration.py`
-  approach into a subprocess-level test suitable for CI.
-- 🔲 README or deployment guide documenting the deploy process for developers.
+- ✅ Device integration test (`tests/test_integration_subprocess.py`): spins up a mock
+  nomothetic over loopback, runs the `nomon-autonomon` CLI as a subprocess for both
+  `explore` and `follow-user` (fake-detector hook), and asserts sensor/frame reads →
+  drive/steer/stop commands reach the mock. Subprocess-level, CI-suitable.
+- ✅ `README.md` deployment guide: dev setup, running a routine, the vision model fetch,
+  and `scripts/deploy.sh` / `make deploy` usage.
 
 **Rationale:** Phase 6 is complete but exists only in the repo; Phase 6b/7 will
 add more routines. Without automated deployment and CI, we cannot verify that
@@ -264,9 +285,17 @@ CI ensures the contract holds across the fleet.
 
 ### Phase 7 — Autonomy Telemetry to ArcadeDB
 
+**Status:** ⏸️ **Deferred (needs more design).** The open question is the
+**device→central transport and auth**: central nomothetic routes authenticate a
+user JWT (`jwt_required`), which a headless autonomy plugin does not have. Options
+include a fleet-scoped device identity, a relay through the device API, or a
+dedicated ingestion token — this should be settled before building. The
+`VehicleAction` results-queue seam and the `cli.py` `report()` hook already exist,
+so picking this up later is additive.
+
 **Goal:** Persist autonomy run records and lifecycle events to the central ArcadeDB.
 
-**Deliverables:**
+**Deliverables (when resumed):**
 - `autonomon.telemetry.AutonomyPublisher`: batches `ActionResult` and lifecycle events; sends to nomothetic `/api/telemetry/autonomy`
 - `nomographic` migration: `AutonomyRun` and `AutonomyEvent` vertex types in `central/`
 - `nomothetic` endpoint: `POST /api/telemetry/autonomy` (central mode only)

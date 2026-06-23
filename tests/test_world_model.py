@@ -3,32 +3,33 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 import pytest
 
-from autonomon import ObstacleWorldModel, PerceptionEvent
+from autonomon import ObstacleWorldModel, PerceptionEvent, WorldStateUpdate
 
 
-def _ultrasonic(distance_cm: float | None) -> dict[str, Any]:
+def _ultrasonic(distance_cm: float | None) -> PerceptionEvent:
     return PerceptionEvent(
         timestamp="t", device_id="d", sensor_type="ultrasonic", data={"distance_cm": distance_cm}
-    ).to_dict()
+    )
 
 
-def _grayscale(values: list[int | None]) -> dict[str, Any]:
+def _grayscale(values: list[int | None]) -> PerceptionEvent:
     return PerceptionEvent(
         timestamp="t",
         device_id="d",
         sensor_type="grayscale",
         data={"channels": [0, 1, 2], "values": values},
-    ).to_dict()
+    )
 
 
-async def _run_events(wm: ObstacleWorldModel, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+async def _run_events(
+    wm: ObstacleWorldModel, events: list[PerceptionEvent]
+) -> list[WorldStateUpdate]:
     """Push events through the world model; return the emitted updates."""
-    q_in: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-    q_out: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q_in: asyncio.Queue[PerceptionEvent] = asyncio.Queue()
+    q_out: asyncio.Queue[WorldStateUpdate] = asyncio.Queue()
     task = asyncio.create_task(wm.run(q_in, q_out))
     for ev in events:
         await q_in.put(ev)
@@ -50,9 +51,9 @@ async def test_obstacle_detected_below_threshold() -> None:
     updates = await _run_events(wm, [_ultrasonic(15.0)])
 
     assert len(updates) == 1
-    assert updates[0]["type"] == "world_state_update"
-    assert updates[0]["state"]["obstacle_ahead"] is True
-    assert updates[0]["delta"] == {"obstacle_ahead": True}
+    assert updates[0].type == "world_state_update"
+    assert updates[0].state["obstacle_ahead"] is True
+    assert updates[0].delta == {"obstacle_ahead": True}
 
 
 @pytest.mark.asyncio
@@ -62,8 +63,8 @@ async def test_first_observation_emits_baseline() -> None:
     updates = await _run_events(wm, [_ultrasonic(50.0)])
 
     assert len(updates) == 1
-    assert updates[0]["delta"] == {}  # baseline: nothing changed from defaults
-    assert updates[0]["state"] == {"obstacle_ahead": False, "cliff_detected": False}
+    assert updates[0].delta == {}  # baseline: nothing changed from defaults
+    assert updates[0].state == {"obstacle_ahead": False, "cliff_detected": False}
 
 
 @pytest.mark.asyncio
@@ -74,7 +75,7 @@ async def test_repeated_clear_after_baseline_is_noop() -> None:
 
     # One baseline emission only; the second clear reading is a no-op.
     assert len(updates) == 1
-    assert updates[0]["delta"] == {}
+    assert updates[0].delta == {}
 
 
 @pytest.mark.asyncio
@@ -85,8 +86,8 @@ async def test_none_distance_is_clear() -> None:
     updates = await _run_events(wm, [_ultrasonic(10.0), _ultrasonic(None)])
 
     assert len(updates) == 2
-    assert updates[0]["delta"] == {"obstacle_ahead": True}
-    assert updates[1]["delta"] == {"obstacle_ahead": False}
+    assert updates[0].delta == {"obstacle_ahead": True}
+    assert updates[1].delta == {"obstacle_ahead": False}
 
 
 @pytest.mark.asyncio
@@ -97,7 +98,7 @@ async def test_delta_emission_only_on_change() -> None:
 
     # All three are "obstacle"; only the first transition emits.
     assert len(updates) == 1
-    assert updates[0]["delta"] == {"obstacle_ahead": True}
+    assert updates[0].delta == {"obstacle_ahead": True}
 
 
 @pytest.mark.asyncio
@@ -105,7 +106,7 @@ async def test_state_snapshot_is_full_not_just_delta() -> None:
     wm = ObstacleWorldModel(device_id="nomon-test")
     updates = await _run_events(wm, [_ultrasonic(5.0)])
 
-    state = updates[0]["state"]
+    state = updates[0].state
     assert set(state) == {"obstacle_ahead", "cliff_detected"}
     assert state["obstacle_ahead"] is True
     assert state["cliff_detected"] is False
@@ -118,8 +119,8 @@ async def test_grayscale_cliff_detection() -> None:
     updates = await _run_events(wm, [_grayscale([600, 30, 500])])
 
     assert len(updates) == 1
-    assert updates[0]["delta"] == {"cliff_detected": True}
-    assert updates[0]["state"]["cliff_detected"] is True
+    assert updates[0].delta == {"cliff_detected": True}
+    assert updates[0].state["cliff_detected"] is True
 
 
 @pytest.mark.asyncio
@@ -133,8 +134,8 @@ async def test_grayscale_reflective_floor_is_not_cliff() -> None:
     updates = await _run_events(wm, [_grayscale([485, 580, 415])])
 
     assert len(updates) == 1
-    assert updates[0]["delta"] == {}  # baseline only; no cliff over a real floor
-    assert updates[0]["state"]["cliff_detected"] is False
+    assert updates[0].delta == {}  # baseline only; no cliff over a real floor
+    assert updates[0].state["cliff_detected"] is False
 
 
 @pytest.mark.asyncio
@@ -143,7 +144,7 @@ async def test_grayscale_default_threshold_trips_on_low_reading() -> None:
     wm = ObstacleWorldModel(device_id="nomon-test")  # default cliff_threshold = 200
     updates = await _run_events(wm, [_grayscale([500, 500, 30])])
 
-    assert updates[-1]["state"]["cliff_detected"] is True
+    assert updates[-1].state["cliff_detected"] is True
 
 
 @pytest.mark.asyncio
@@ -154,7 +155,7 @@ async def test_grayscale_none_channel_is_tolerated() -> None:
     updates = await _run_events(wm, [_grayscale([30, None, 500])])
 
     assert len(updates) == 1
-    assert updates[0]["delta"] == {"cliff_detected": True}
+    assert updates[0].delta == {"cliff_detected": True}
 
 
 @pytest.mark.asyncio
@@ -164,7 +165,7 @@ async def test_grayscale_all_none_is_clear_not_crash() -> None:
 
     # No numeric channel trips the threshold; baseline emit with no cliff.
     assert len(updates) == 1
-    assert updates[0]["state"]["cliff_detected"] is False
+    assert updates[0].state["cliff_detected"] is False
 
 
 @pytest.mark.asyncio
@@ -175,7 +176,7 @@ async def test_independent_obstacle_and_cliff_fields() -> None:
     updates = await _run_events(wm, [_ultrasonic(10.0), _grayscale([30, 500, 500])])
 
     assert len(updates) == 2
-    assert updates[0]["delta"] == {"obstacle_ahead": True}
-    assert updates[1]["delta"] == {"cliff_detected": True}
+    assert updates[0].delta == {"obstacle_ahead": True}
+    assert updates[1].delta == {"cliff_detected": True}
     # Final snapshot carries both.
-    assert updates[1]["state"] == {"obstacle_ahead": True, "cliff_detected": True}
+    assert updates[1].state == {"obstacle_ahead": True, "cliff_detected": True}
