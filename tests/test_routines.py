@@ -14,8 +14,10 @@ import pytest
 
 from autonomon import (
     AvoidancePlanner,
+    FakeDetector,
     FanInSlot,
     ObstacleWorldModel,
+    OpenCvHogDetector,
     Perceptron,
     Pipeline,
     PursuitPlanner,
@@ -23,6 +25,7 @@ from autonomon import (
     UnknownRoutineError,
     VehicleAction,
     VisionPerception,
+    YoloOnnxDetector,
     available_routines,
     get_routine,
 )
@@ -193,6 +196,57 @@ def test_follow_user_params_map_to_layer_args() -> None:
     assert world_model._lost_target_timeout_s == 2.0
     assert planner._target_distance_cm == 120.0
     assert planner._max_speed_pct == 40.0
+
+
+# ---------------------------------------------------------------------------
+# follow-user detector selection
+# ---------------------------------------------------------------------------
+
+
+def _follow_user_detector(params: dict[str, Any]) -> Any:
+    """Build the follow-user pipeline and return its injected detector."""
+    pipeline = get_routine("follow-user")(_client(), "nomon-1", params)
+    perception = cast(VisionPerception, pipeline._slots["perception"]._impl)  # type: ignore[union-attr]
+    return perception._detector
+
+
+def test_follow_user_default_detector_is_yolo() -> None:
+    assert isinstance(_follow_user_detector({}), YoloOnnxDetector)
+
+
+def test_follow_user_detector_param_selects_opencv_hog() -> None:
+    assert isinstance(_follow_user_detector({"detector": "opencv-hog"}), OpenCvHogDetector)
+
+
+def test_follow_user_detector_env_selects_opencv_hog(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NOMON_VISION_DETECTOR", "opencv-hog")
+    assert isinstance(_follow_user_detector({}), OpenCvHogDetector)
+
+
+def test_follow_user_detector_param_overrides_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NOMON_VISION_DETECTOR", "opencv-hog")
+    # An explicit param wins over the env default.
+    assert isinstance(_follow_user_detector({"detector": "yolo-onnx"}), YoloOnnxDetector)
+
+
+def test_follow_user_detector_fake_kind() -> None:
+    assert isinstance(_follow_user_detector({"detector": "fake"}), FakeDetector)
+
+
+def test_follow_user_fake_detections_env_overrides_kind(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The scripted dev hook wins outright, even when a real detector kind is set.
+    monkeypatch.setenv(
+        "NOMON_VISION_FAKE_DETECTIONS",
+        '[{"cx": 0.5, "cy": 0.5, "w": 0.2, "h": 0.6, "confidence": 0.9}]',
+    )
+    det = _follow_user_detector({"detector": "opencv-hog"})
+    assert isinstance(det, FakeDetector)
+    assert det.detect(b"")[0].confidence == 0.9
+
+
+def test_follow_user_unknown_detector_raises() -> None:
+    with pytest.raises(ValueError, match="unknown vision detector"):
+        get_routine("follow-user")(_client(), "nomon-1", {"detector": "nope"})
 
 
 # ---------------------------------------------------------------------------

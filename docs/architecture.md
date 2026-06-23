@@ -516,13 +516,20 @@ never to add processing of data already served.
 | Perception (vision, `follow-user`) | raw in | `GET /api/camera/frame` → `image/jpeg` (single raw frame) |
 | Action | actions out | `POST /api/drive`, `POST /api/steer`, `POST /api/hat/motor/stop` |
 
-**Raw camera frames (`follow-user`, Phase 6b):** `GET /api/camera/frame` returns a
+**Raw camera frames (`follow-user`):** `GET /api/camera/frame` returns a
 single raw JPEG (`image/jpeg`). Note `POST /api/camera/capture` writes a file to
 disk and returns metadata only — it does *not* return frame bytes — so the frame
 endpoint was added as a small *raw input* (ADR-004-legal). The `follow-user`
 routine polls this endpoint and runs person detection **inside its autonomon
-vision perception layer** (ONNX Runtime + YOLOv8n) — it does *not* call a
-nomothetic detection endpoint, because none exists or should.
+vision perception layer** — it does *not* call a nomothetic detection endpoint,
+because none exists or should.
+
+The detector is swappable behind the `Detector` protocol and chosen by kind
+(`detector` param / `NOMON_VISION_DETECTOR`): `yolo-onnx` (YOLOv8n via
+onnxruntime, the default), `opencv-hog` (OpenCV HOG+SVM, no model file), or
+`fake`. The chosen detector and its model path are autonomon-only config: the
+`nomon-autonomon` CLI self-loads them from `/etc/autonomon/autonomon.env`, so
+nomothetic carries nothing about detectors or models (ADR-004/005).
 
 All calls use device-scoped JWT (`NOMON_PLUGIN_TOKEN`) in the `Authorization: Bearer` header. TLS verification is skipped for self-signed device certs (`verify=False` on httpx, documented in ADR-001 of nomothetic).
 

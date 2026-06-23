@@ -5,7 +5,13 @@ from autonomon.action.vehicle import VehicleAction
 from autonomon.fan_in import FanInSlot
 from autonomon.messages import ActionPlan, ActionResult, PerceptionEvent, WorldStateUpdate
 from autonomon.perception.base import PerceptionBase
-from autonomon.perception.detector import Detection, Detector, FakeDetector, YoloOnnxDetector
+from autonomon.perception.detector import (
+    Detection,
+    Detector,
+    FakeDetector,
+    OpenCvHogDetector,
+    YoloOnnxDetector,
+)
 from autonomon.perception.perceptron import Perceptron
 from autonomon.perception.vision import VisionPerception
 from autonomon.pipeline import Pipeline
@@ -46,6 +52,7 @@ __all__ = [
     "Detection",
     "Detector",
     "FakeDetector",
+    "OpenCvHogDetector",
     "YoloOnnxDetector",
     # Pipeline and slot primitives
     "Pipeline",

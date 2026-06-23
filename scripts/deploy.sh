@@ -39,6 +39,12 @@
 #                          Absolute path of the routine catalogue this script
 #                          publishes for nomothetic to read. Default (shared with
 #                          nomothetic/.env.device): /var/lib/nomon/routine_catalog.json.
+#   NOMON_VISION_DETECTOR  follow-user detector: yolo-onnx (default) | opencv-hog |
+#                          fake. Written to /etc/autonomon/autonomon.env; the CLI
+#                          loads it. opencv-hog needs no model download.
+#   NOMON_VISION_MODEL_PATH
+#                          Path to yolov8n.onnx (yolo-onnx only). Auto-fetched to
+#                          /var/lib/nomon/models when unset.
 #
 # What the script does (release mode):
 #   1. Saves the current installed autonomon version for rollback.
@@ -91,7 +97,7 @@ if [[ -f "${ENV_FILE}" ]]; then
         val="${val#\"}" ; val="${val%\"}"
         val="${val#\'}" ; val="${val%\'}"
         case "${key}" in
-            NOMON_PI_HOST|NOMON_SSH_KEY|NOMON_REMOTE_DIR|NOMON_ROUTINE_CATALOG_PATH|NOMON_SUDO_PASS)
+            NOMON_PI_HOST|NOMON_SSH_KEY|NOMON_REMOTE_DIR|NOMON_ROUTINE_CATALOG_PATH|NOMON_SUDO_PASS|NOMON_VISION_DETECTOR|NOMON_VISION_MODEL_PATH)
                 export "${key}=${val}" ;;
         esac
     done < "${ENV_FILE}"
@@ -103,6 +109,9 @@ _NOMON_SUDO_PASS_QUOTED="$(printf '%q' "${NOMON_SUDO_PASS}")"
 # SSH, empty positionals (e.g. an unset VERSION) collapse and shift later args, so
 # an env var is the robust channel (same approach as NOMON_SKIP_TESTS below).
 _NOMON_ROUTINE_CATALOG_PATH_QUOTED="$(printf '%q' "${NOMON_ROUTINE_CATALOG_PATH:-}")"
+# Vision config (autonomon-owned; written to /etc/autonomon/autonomon.env on the Pi).
+_NOMON_VISION_DETECTOR_QUOTED="$(printf '%q' "${NOMON_VISION_DETECTOR:-}")"
+_NOMON_VISION_MODEL_PATH_QUOTED="$(printf '%q' "${NOMON_VISION_MODEL_PATH:-}")"
 
 # ── Argument parsing ───────────────────────────────────────────────────────────
 
@@ -147,11 +156,13 @@ if [[ -n "${PI_HOST}" ]]; then
         SSH_OPTS+=(-i "${NOMON_SSH_KEY}")
     fi
     echo "==> Deploying autonomon${VERSION:+ ${VERSION}} → ${PI_HOST}"
-    RUN_CMD=(ssh "${SSH_OPTS[@]}" "${PI_HOST}" "NOMON_SKIP_TESTS=${SKIP_TESTS} NOMON_SUDO_PASS=${_NOMON_SUDO_PASS_QUOTED} NOMON_ROUTINE_CATALOG_PATH=${_NOMON_ROUTINE_CATALOG_PATH_QUOTED} bash -ls \"\$@\"" --)
+    RUN_CMD=(ssh "${SSH_OPTS[@]}" "${PI_HOST}" "NOMON_SKIP_TESTS=${SKIP_TESTS} NOMON_SUDO_PASS=${_NOMON_SUDO_PASS_QUOTED} NOMON_ROUTINE_CATALOG_PATH=${_NOMON_ROUTINE_CATALOG_PATH_QUOTED} NOMON_VISION_DETECTOR=${_NOMON_VISION_DETECTOR_QUOTED} NOMON_VISION_MODEL_PATH=${_NOMON_VISION_MODEL_PATH_QUOTED} bash -ls \"\$@\"" --)
 else
     echo "==> Deploying autonomon${VERSION:+ ${VERSION}} locally"
     export NOMON_SKIP_TESTS="${SKIP_TESTS}"
     export NOMON_ROUTINE_CATALOG_PATH="${NOMON_ROUTINE_CATALOG_PATH:-}"
+    export NOMON_VISION_DETECTOR="${NOMON_VISION_DETECTOR:-}"
+    export NOMON_VISION_MODEL_PATH="${NOMON_VISION_MODEL_PATH:-}"
     RUN_CMD=(bash -ls --)
 fi
 
@@ -362,45 +373,58 @@ _published="$("${REMOTE_DIR}/.venv/bin/python" -c \
     'import json,sys; print(json.load(open(sys.argv[1]))["routines"])' "${CATALOG_PATH}")"
 echo "  Catalogue published (routines: ${_published}) ✓"
 
-# ── Vision model (follow-user routine) ───────────────────────────────────────
-# The follow-user routine needs a yolov8n.onnx person-detection model.
-# Download or export it to /var/lib/nomon/models/ and advertise its path in
-# /etc/nomothetic/nomothetic.env so nomothetic passes NOMON_VISION_MODEL_PATH
-# to the autonomon subprocess (routine_manager._ENV_PASSTHROUGH).
-# Skip if NOMON_VISION_MODEL_PATH is already set in the environment (e.g.
-# a custom model was installed manually before this deploy).
+# ── Vision detector config (follow-user routine) ─────────────────────────────
+# Autonomon owns its vision config end-to-end (ADR-004/005): the chosen detector
+# and any model path are written into THIS project's env file
+# (/etc/autonomon/autonomon.env, below) and the nomon-autonomon CLI loads them at
+# startup. nomothetic carries none of this. Configure via .env.device:
+#   NOMON_VISION_DETECTOR    = yolo-onnx (default) | opencv-hog | fake
+#   NOMON_VISION_MODEL_PATH  = path to yolov8n.onnx (yolo-onnx only; auto-fetched
+#                              to /var/lib/nomon/models when unset)
 
-VISION_MODEL_DIR="/var/lib/nomon/models"
-VISION_MODEL_PATH="${VISION_MODEL_DIR}/yolov8n.onnx"
-NOMOTHETIC_ENV_FILE="/etc/nomothetic/nomothetic.env"
+VISION_DETECTOR="${NOMON_VISION_DETECTOR:-yolo-onnx}"
+VISION_MODEL_PATH="${NOMON_VISION_MODEL_PATH:-}"
+echo "==> Vision detector: ${VISION_DETECTOR}"
 
-if [[ -z "${NOMON_VISION_MODEL_PATH:-}" ]]; then
-    if [[ ! -f "${VISION_MODEL_PATH}" ]]; then
-        echo "==> Fetching vision model (yolov8n.onnx)..."
-        sudo mkdir -p "${VISION_MODEL_DIR}"
-        MODEL_DIR="${VISION_MODEL_DIR}" MODEL_PATH="${VISION_MODEL_PATH}" \
-            bash "${REMOTE_DIR}/scripts/fetch_model.sh"
-        sudo chmod 644 "${VISION_MODEL_PATH}"
-        echo "  Model ready: ${VISION_MODEL_PATH} ✓"
-    else
-        echo "==> Vision model already present: ${VISION_MODEL_PATH} ✓"
-    fi
-    NOMON_VISION_MODEL_PATH="${VISION_MODEL_PATH}"
-fi
-
-# Upsert NOMON_VISION_MODEL_PATH in /etc/nomothetic/nomothetic.env so nomothetic
-# (which loads that file as its systemd EnvironmentFile) passes it through to
-# the autonomon subprocess.
-if [[ -f "${NOMOTHETIC_ENV_FILE}" ]]; then
-    if grep -qE '^\s*NOMON_VISION_MODEL_PATH\s*=' "${NOMOTHETIC_ENV_FILE}" 2>/dev/null; then
-        sudo sed -i "s|^\s*NOMON_VISION_MODEL_PATH\s*=.*|NOMON_VISION_MODEL_PATH=${NOMON_VISION_MODEL_PATH}|" \
-            "${NOMOTHETIC_ENV_FILE}"
-    else
-        printf '\nNOMON_VISION_MODEL_PATH=%s\n' "${NOMON_VISION_MODEL_PATH}" \
-            | sudo tee -a "${NOMOTHETIC_ENV_FILE}" > /dev/null
-    fi
-    echo "  NOMON_VISION_MODEL_PATH set in ${NOMOTHETIC_ENV_FILE} ✓"
-fi
+case "${VISION_DETECTOR}" in
+    opencv-hog)
+        # No model download — the SVM ships inside OpenCV. Just the light extra.
+        echo "==> Installing OpenCV vision extra (no model download needed)..."
+        (cd "${REMOTE_DIR}" && uv sync --extra vision-opencv --quiet)
+        echo "  vision-opencv installed ✓"
+        ;;
+    yolo-onnx)
+        echo "==> Installing ONNX vision extra..."
+        (cd "${REMOTE_DIR}" && uv sync --extra vision --quiet)
+        echo "  vision installed ✓"
+        if [[ -z "${VISION_MODEL_PATH}" ]]; then
+            VISION_MODEL_DIR="/var/lib/nomon/models"
+            VISION_MODEL_PATH="${VISION_MODEL_DIR}/yolov8n.onnx"
+            if [[ ! -f "${VISION_MODEL_PATH}" ]]; then
+                echo "==> Fetching vision model (yolov8n.onnx)..."
+                sudo mkdir -p "${VISION_MODEL_DIR}"
+                # Fetch into a dir we own, then move into the root-owned location.
+                _model_tmp="$(mktemp -d)"
+                MODEL_DIR="${_model_tmp}" MODEL_PATH="${_model_tmp}/yolov8n.onnx" \
+                    bash "${REMOTE_DIR}/scripts/fetch_model.sh"
+                sudo mv -f "${_model_tmp}/yolov8n.onnx" "${VISION_MODEL_PATH}"
+                rm -rf "${_model_tmp}"
+                sudo chmod 644 "${VISION_MODEL_PATH}"
+                echo "  Model ready: ${VISION_MODEL_PATH} ✓"
+            else
+                echo "==> Vision model already present: ${VISION_MODEL_PATH} ✓"
+            fi
+        fi
+        ;;
+    fake)
+        echo "  (fake detector — no vision deps or model needed)"
+        ;;
+    *)
+        echo "  WARNING: unknown NOMON_VISION_DETECTOR='${VISION_DETECTOR}';" >&2
+        echo "  the follow-user routine will error at start. Expected:" >&2
+        echo "  yolo-onnx | opencv-hog | fake." >&2
+        ;;
+esac
 
 # ── Plugin auth: key + env file (ADR-019) ─────────────────────────────────────
 # Generate an Ed25519 private key on-device (never leaves the Pi) and write the
@@ -441,11 +465,18 @@ _tmp_env="$(mktemp)"
 cat > "${_tmp_env}" <<EOF_PLUGIN_ENV
 # autonomon plugin environment (written by deploy.sh). No secret token here:
 # the device JWT is acquired at runtime via Ed25519 challenge-response (ADR-019).
+# The nomon-autonomon CLI loads this file at startup (non-overriding), so these
+# reach routines whether launched manually or by nomothetic — which carries none
+# of autonomon's config (ADR-004/005).
 NOMON_DEVICE_URL=${LOCAL_API_URL}
 NOMON_PLUGIN_KEY=${PLUGIN_KEY_PATH}
 NOMON_PLUGIN_NAME=${PLUGIN_NAME}
 NOMON_DEVICE_ID=${DEVICE_HOSTNAME}
+NOMON_VISION_DETECTOR=${VISION_DETECTOR}
 EOF_PLUGIN_ENV
+if [[ -n "${VISION_MODEL_PATH}" ]]; then
+    echo "NOMON_VISION_MODEL_PATH=${VISION_MODEL_PATH}" >> "${_tmp_env}"
+fi
 sudo mv -f "${_tmp_env}" "${PLUGIN_ENV_FILE}"
 sudo chmod 644 "${PLUGIN_ENV_FILE}"
 echo "  Env file written ✓"

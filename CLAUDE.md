@@ -81,9 +81,19 @@ implementations it needs.
 
 - `explore` — obstacle/cliff avoidance: `Perceptron.ultrasonic` (+ `grayscale` via a
   `FanInSlot`) → `ObstacleWorldModel` → `AvoidancePlanner` → `VehicleAction`.
-- `follow-user` (Phase 6b, in progress) — vision person-following: a new vision
-  perception layer (ONNX Runtime + YOLOv8n, polling `GET /api/camera/frame`) → target
-  world model → pursuit planner → reused `VehicleAction`.
+- `follow-user` — vision person-following: `VisionPerception` (polls
+  `GET /api/camera/frame`, detects a person) → `TargetWorldModel` → `PursuitPlanner` →
+  reused `VehicleAction`.
+
+**Swappable detectors (`follow-user`):** the detector backend is chosen by *kind* via
+the `detector` param or `NOMON_VISION_DETECTOR` env var (`_build_detector` in
+`routines/follow_user.py`):
+- `yolo-onnx` (default) — `YoloOnnxDetector`, YOLOv8n via onnxruntime (`vision` extra +
+  a `yolov8n.onnx` at `NOMON_VISION_MODEL_PATH`). Most accurate.
+- `opencv-hog` — `OpenCvHogDetector`, OpenCV's built-in HOG+SVM (`vision-opencv` extra).
+  **No model file**, lighter/faster to deploy; good for first bring-up.
+- `fake` — `FakeDetector` (no deps). `NOMON_VISION_FAKE_DETECTIONS` (a JSON array)
+  forces a scripted `FakeDetector` regardless of kind — the dev/CI hook.
 
 **Multi-source perception fan-in:** pass a `FanInSlot` as `perception` to run several
 sensor sources onto one queue (Perception position only). There is no runtime layer
@@ -96,6 +106,14 @@ One generic CLI entry point, `nomon-autonomon` (`routines/cli.py`), runs any rou
 name. It reads `NOMON_DEVICE_URL`, `NOMON_PLUGIN_PARAMS` (JSON; selects the routine via a
 `routine`/`name` key), and credentials from the env, builds the `Pipeline`, runs it, and
 emits NDJSON lifecycle events (`starting`/`running`/`stopping`/`error`) to stdout.
+
+**autonomon owns its own runtime config (ADR-004/005).** At startup the CLI loads
+`/etc/autonomon/autonomon.env` (override `NOMON_AUTONOMON_ENV_FILE`; written by
+`scripts/deploy.sh`) into the environment **non-overriding** — so autonomon-only settings
+(`NOMON_VISION_DETECTOR`, `NOMON_VISION_MODEL_PATH`, …) reach *every* run, including
+routines launched by nomothetic. nomothetic keeps a deliberately minimal subprocess env
+and carries **none** of the brain's config; values it does set (device URL, id, creds)
+still win because the file load never overrides an existing var.
 
 At deploy time autonomon publishes its catalogue (`nomon_manifest` + its venv's
 `nomon-autonomon` path) to `NOMON_ROUTINE_CATALOG_PATH` (default

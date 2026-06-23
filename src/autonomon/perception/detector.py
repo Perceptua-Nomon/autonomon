@@ -104,6 +104,17 @@ def _require_pil():
     return Image
 
 
+def _require_cv2() -> Any:
+    try:
+        import cv2
+    except ImportError as exc:  # pragma: no cover - exercised only without the extra
+        raise RuntimeError(
+            "opencv is required for OpenCvHogDetector; install the 'vision-opencv' "
+            "extra (pip install 'autonomon[vision-opencv]')"
+        ) from exc
+    return cv2
+
+
 class YoloOnnxDetector:
     """Person detector backed by a YOLOv8n ONNX model run via onnxruntime.
 
@@ -223,3 +234,97 @@ class YoloOnnxDetector:
             iou = inter / (areas[i] + areas[order[1:]] - inter + 1e-9)
             order = order[1:][iou < self._iou_threshold]
         return keep
+
+
+class OpenCvHogDetector:
+    """Person detector using OpenCV's built-in HOG + linear-SVM people detector.
+
+    Unlike :class:`YoloOnnxDetector`, this needs **no model file** — the trained
+    SVM ships inside OpenCV — so it deploys without downloading any weights. It is
+    lighter to install (``opencv-python-headless`` only) and quicker to bring up,
+    at some cost in accuracy. ``detectMultiScale`` is CPU-heavy, so frames are
+    decoded and downscaled to ``detect_width`` before detection (a Pi Zero 2W
+    cannot run HOG on a full-resolution frame at any useful rate).
+
+    OpenCV/numpy are **lazy-imported** (the ``vision-opencv`` extra); importing
+    this module never requires them. The HOG descriptor is built lazily on first
+    :meth:`detect`.
+
+    Parameters
+    ----------
+    detect_width : int
+        Frame is downscaled to this width (keeping aspect) before detection.
+        Default 320. Smaller is faster but misses smaller/farther people.
+    hit_threshold : float
+        SVM decision threshold passed to ``detectMultiScale``. Default 0.0.
+        Higher rejects weak hits.
+    win_stride : int
+        Sliding-window stride in pixels (square). Default 8. Larger is faster,
+        coarser.
+    scale : float
+        Image-pyramid scale factor. Default 1.05.
+    confidence_scale : float
+        Multiplier applied to each SVM weight before it is squashed to a
+        ``[0, 1]`` confidence via a logistic. HOG weights are unbounded decision
+        values, **not** probabilities; the squash only needs to be monotonic so
+        the routine can pick the strongest detection and apply its own
+        ``confidence_threshold``. Default 1.0.
+    """
+
+    def __init__(
+        self,
+        *,
+        detect_width: int = 320,
+        hit_threshold: float = 0.0,
+        win_stride: int = 8,
+        scale: float = 1.05,
+        confidence_scale: float = 1.0,
+    ) -> None:
+        self._detect_width = detect_width
+        self._hit_threshold = hit_threshold
+        self._win_stride = win_stride
+        self._scale = scale
+        self._confidence_scale = confidence_scale
+        self._hog: Any | None = None
+
+    def _ensure_hog(self) -> None:
+        if self._hog is not None:
+            return
+        cv2 = _require_cv2()
+        hog = cv2.HOGDescriptor()
+        hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+        self._hog = hog
+
+    def detect(self, frame_jpeg: bytes) -> list[Detection]:
+        np = _require_numpy()
+        cv2 = _require_cv2()
+        self._ensure_hog()
+        buf = np.frombuffer(frame_jpeg, dtype=np.uint8)
+        img = cv2.imdecode(buf, cv2.IMREAD_COLOR)  # BGR; None if undecodable
+        if img is None:
+            return []
+        h0, w0 = img.shape[:2]
+        if w0 > self._detect_width:
+            factor = self._detect_width / float(w0)
+            img = cv2.resize(img, (self._detect_width, max(1, int(round(h0 * factor)))))
+        sh, sw = img.shape[:2]
+        assert self._hog is not None
+        rects, weights = self._hog.detectMultiScale(
+            img,
+            hitThreshold=self._hit_threshold,
+            winStride=(self._win_stride, self._win_stride),
+            scale=self._scale,
+        )
+        detections: list[Detection] = []
+        for (x, y, w, h), weight in zip(rects, np.asarray(weights).reshape(-1)):
+            conf = 1.0 / (1.0 + float(np.exp(-float(weight) * self._confidence_scale)))
+            detections.append(
+                Detection(
+                    cx=(x + w / 2.0) / sw,
+                    cy=(y + h / 2.0) / sh,
+                    w=w / sw,
+                    h=h / sh,
+                    confidence=conf,
+                )
+            )
+        return detections

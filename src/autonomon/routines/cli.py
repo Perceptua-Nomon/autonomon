@@ -43,6 +43,15 @@ from autonomon.routines.reporting import StatusReporter
 # Per-request timeout for the shared device client (ADR-002).
 _REQUEST_TIMEOUT_S = 5.0
 
+# autonomon's own runtime env file, written by scripts/deploy.sh. The CLI loads
+# it at startup so autonomon-specific config (vision detector/model, device id,
+# …) reaches every run — including routines launched by nomothetic, which keeps a
+# deliberately minimal subprocess env and knows nothing of the brain's internals
+# (ADR-004/005). Override the path with NOMON_AUTONOMON_ENV_FILE; a missing file
+# is fine (dev machines have none). Loading never overrides an already-set var,
+# so the launcher's values and an explicit shell env always win.
+_DEFAULT_ENV_FILE = "/etc/autonomon/autonomon.env"
+
 # An auth value is either a bearer-token string or a prepared httpx.Auth flow.
 AuthValue = Union[str, httpx.Auth]
 
@@ -205,14 +214,49 @@ def _resolve_auth(device_url: str) -> AuthValue | None:
     return None
 
 
+def _load_env_file(path: str | None = None) -> None:
+    """Layer autonomon's own env file into ``os.environ`` without overriding it.
+
+    Parses simple ``KEY=VALUE`` lines (``#`` comments and blanks skipped, optional
+    surrounding quotes stripped) and applies each via ``setdefault`` — so a value
+    already present in the environment (set by the launcher or the shell) always
+    wins. A missing or unreadable file is ignored. This is how autonomon-only
+    config (e.g. ``NOMON_VISION_DETECTOR``/``NOMON_VISION_MODEL_PATH``) reaches a
+    nomothetic-launched routine without nomothetic carrying it (ADR-004/005).
+
+    Parameters
+    ----------
+    path : str, optional
+        Env file to load. Defaults to ``NOMON_AUTONOMON_ENV_FILE`` or
+        :data:`_DEFAULT_ENV_FILE`.
+    """
+    env_path = path or os.environ.get("NOMON_AUTONOMON_ENV_FILE") or _DEFAULT_ENV_FILE
+    try:
+        with open(env_path, encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return  # no file (dev machine) or unreadable — nothing to layer in
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            os.environ.setdefault(key, value)
+
+
 def main() -> int:
     """Console-script entry point: read env, run the routine, return an exit code.
 
-    Reads ``NOMON_DEVICE_URL``, ``NOMON_PLUGIN_PARAMS``, the optional
-    ``NOMON_DEVICE_ID``, and credentials (``NOMON_PLUGIN_KEY`` preferred, else
-    ``NOMON_PLUGIN_TOKEN``). Secrets are never echoed. Returns the process exit
-    code (``0`` clean, ``1`` on error).
+    First layers in autonomon's own env file (:func:`_load_env_file`), then reads
+    ``NOMON_DEVICE_URL``, ``NOMON_PLUGIN_PARAMS``, the optional ``NOMON_DEVICE_ID``,
+    and credentials (``NOMON_PLUGIN_KEY`` preferred, else ``NOMON_PLUGIN_TOKEN``).
+    Secrets are never echoed. Returns the process exit code (``0`` clean, ``1`` on
+    error).
     """
+    _load_env_file()
     device_url = os.environ.get("NOMON_DEVICE_URL", "")
     raw_params = os.environ.get("NOMON_PLUGIN_PARAMS", "{}")
     device_id = os.environ.get("NOMON_DEVICE_ID", "nomon")

@@ -8,6 +8,7 @@ pipeline run — no real environment, no network.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -15,6 +16,22 @@ import httpx
 import pytest
 
 from autonomon.routines import cli
+
+
+@pytest.fixture(autouse=True)
+def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> Any:
+    """Keep env handling deterministic across CLI tests.
+
+    Points the CLI's env-file loader at an absent path so a real
+    ``/etc/autonomon/autonomon.env`` on a deploy host can't leak in, and fully
+    restores ``os.environ`` afterwards (``_load_env_file`` mutates it directly via
+    ``setdefault``, which monkeypatch would not undo).
+    """
+    monkeypatch.setenv("NOMON_AUTONOMON_ENV_FILE", str(tmp_path / "absent.env"))
+    saved = os.environ.copy()
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
 
 
 def _parse_events(captured: str) -> list[dict[str, Any]]:
@@ -196,3 +213,41 @@ def test_main_runs_routine_via_run(monkeypatch, capsys) -> None:
     assert code == 0
     events = _parse_events(capsys.readouterr().out)
     assert [e["type"] for e in events] == ["starting", "running", "stopping"]
+
+
+# ---------------------------------------------------------------------------
+# _load_env_file(): autonomon self-loads its own runtime config
+# ---------------------------------------------------------------------------
+
+
+def test_load_env_file_sets_missing_vars(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("NOMON_VISION_DETECTOR", raising=False)
+    monkeypatch.delenv("NOMON_VISION_MODEL_PATH", raising=False)
+    env_file = tmp_path / "autonomon.env"
+    env_file.write_text(
+        "# a comment\n"
+        "\n"
+        "NOMON_VISION_DETECTOR=opencv-hog\n"
+        'NOMON_VISION_MODEL_PATH="/models/yolov8n.onnx"\n'
+    )
+
+    cli._load_env_file(str(env_file))
+
+    assert os.environ["NOMON_VISION_DETECTOR"] == "opencv-hog"
+    assert os.environ["NOMON_VISION_MODEL_PATH"] == "/models/yolov8n.onnx"  # quotes stripped
+
+
+def test_load_env_file_does_not_override_existing(monkeypatch, tmp_path) -> None:
+    # A value already in the environment (launcher/shell) beats the file.
+    monkeypatch.setenv("NOMON_VISION_DETECTOR", "yolo-onnx")
+    env_file = tmp_path / "autonomon.env"
+    env_file.write_text("NOMON_VISION_DETECTOR=opencv-hog\n")
+
+    cli._load_env_file(str(env_file))
+
+    assert os.environ["NOMON_VISION_DETECTOR"] == "yolo-onnx"
+
+
+def test_load_env_file_missing_file_is_noop(tmp_path) -> None:
+    # No file (a dev machine) is fine — must not raise.
+    cli._load_env_file(str(tmp_path / "does-not-exist.env"))

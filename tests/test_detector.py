@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from autonomon import Detection, Detector, FakeDetector, YoloOnnxDetector
+from autonomon import Detection, Detector, FakeDetector, OpenCvHogDetector, YoloOnnxDetector
 
 
 def test_detection_fields() -> None:
@@ -47,3 +47,35 @@ def test_yolo_detector_without_model_path_raises_clearly() -> None:
     det = YoloOnnxDetector("")
     with pytest.raises(RuntimeError, match="no vision model configured"):
         det._ensure_session()
+
+
+# OpenCvHogDetector -----------------------------------------------------------
+
+
+def test_opencv_hog_constructs_lazily_without_deps() -> None:
+    # Construction sets no descriptor and must not import opencv: a model-free
+    # detector that can be wired in the factory regardless of the extra.
+    det = OpenCvHogDetector()
+    assert isinstance(det, Detector)  # satisfies the runtime-checkable Protocol
+    assert det._hog is None
+
+
+def test_opencv_hog_undecodable_frame_returns_empty() -> None:
+    pytest.importorskip("cv2")
+    det = OpenCvHogDetector()
+    # imdecode returns None for non-image bytes → no detections, no error.
+    assert det.detect(b"definitely not a jpeg") == []
+
+
+def test_opencv_hog_returns_detection_list_for_a_valid_frame() -> None:
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    # A blank frame: HOG finds nobody, but detect() must still return a
+    # (possibly empty) list of Detection objects with normalised coords.
+    frame = np.zeros((128, 96, 3), dtype=np.uint8)
+    ok, buf = cv2.imencode(".jpg", frame)
+    assert ok
+    out = OpenCvHogDetector(detect_width=96).detect(buf.tobytes())
+    assert isinstance(out, list)
+    assert all(isinstance(d, Detection) for d in out)
+    assert all(0.0 <= d.cx <= 1.0 and 0.0 <= d.cy <= 1.0 for d in out)
