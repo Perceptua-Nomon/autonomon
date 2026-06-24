@@ -253,12 +253,14 @@ else
 fi
 
 # ── Save current git ref for rollback (release mode only) ─────────────────────
+# Note: in release mode we do a fresh clone, so we save the HEAD of that clone
+# (which will be main/master) as the "previous" state for rollback.
 
 if [[ "${DEPLOY_LOCAL}" != "true" ]]; then
     PREV_REF="$(git rev-parse HEAD)"
     PREV_LABEL="$(git describe --tags --exact-match HEAD 2>/dev/null \
                   || git rev-parse --short HEAD)"
-    echo "  Current git ref: ${PREV_LABEL}"
+    echo "  Fresh clone HEAD: ${PREV_LABEL}"
 fi
 
 # ── Resolve target version (pre-flight) ───────────────────────────────────────
@@ -267,7 +269,19 @@ if [[ "${DEPLOY_LOCAL}" == "true" ]]; then
     TARGET="${REQUESTED_VERSION}"
     echo "==> Target: ${TARGET} (local source)"
 else
-    echo "==> Fetching tags from origin..."
+    echo "==> Fresh clone from origin..."
+    _github_repo="https://github.com/anthropics/nomon"
+    _tmp_clone="$(mktemp -d)"
+    git clone --quiet "${_github_repo}" "${_tmp_clone}"
+
+    # Backup existing repo if present and move fresh clone into place
+    if [[ -d "${REMOTE_DIR}" && -d "${REMOTE_DIR}/.git" ]]; then
+        mv "${REMOTE_DIR}" "${REMOTE_DIR}.backup.$$"
+    fi
+    mv "${_tmp_clone}" "${REMOTE_DIR}"
+    cd "${REMOTE_DIR}"
+
+    echo "  Fetching tags from origin..."
     git fetch --tags --quiet
 
     TARGET="${REQUESTED_VERSION}"
@@ -285,11 +299,6 @@ else
         exit 1
     fi
 
-    CURRENT_TAG="$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
-    if [[ "${CURRENT_TAG}" == "${TARGET}" ]]; then
-        echo "  Note: already on ${TARGET}; re-running install and verification."
-    fi
-
     echo "==> Target: ${TARGET}"
 fi
 
@@ -304,8 +313,17 @@ rollback() {
     echo "" >&2
     echo "!! Deployment failed. Rolling back..." >&2
 
-    if [[ "${DEPLOY_LOCAL}" != "true" && -n "${PREV_REF:-}" ]]; then
-        git checkout --quiet "${PREV_REF}" || true
+    # In release mode, restore from backup; in local mode, just reinstall.
+    if [[ "${DEPLOY_LOCAL}" != "true" ]]; then
+        # Find and restore the backup directory if it exists
+        for _backup in "${REMOTE_DIR}".backup.*; do
+            if [[ -d "${_backup}" ]]; then
+                rm -rf "${REMOTE_DIR}"
+                mv "${_backup}" "${REMOTE_DIR}"
+                echo "  Restored from backup: ${_backup}" >&2
+                break
+            fi
+        done
     fi
 
     if [[ -n "${PREV_VERSION:-}" ]]; then
@@ -574,4 +592,13 @@ echo "  Routine catalogue: ${CATALOG_PATH} (nomothetic reads this to list/launch
 echo "  Run a routine with:"
 echo "    set -a; . ${PLUGIN_ENV_FILE}; set +a; \\"
 echo "    NOMON_PLUGIN_PARAMS='{\"routine\":\"explore\"}' ${REMOTE_DIR}/.venv/bin/nomon-autonomon"
+
+# Clean up backup directory from release deploy (if deployment succeeded)
+if [[ "${DEPLOY_LOCAL}" != "true" ]]; then
+    for _backup in "${REMOTE_DIR}".backup.*; do
+        if [[ -d "${_backup}" ]]; then
+            rm -rf "${_backup}"
+        fi
+    done
+fi
 END_REMOTE
