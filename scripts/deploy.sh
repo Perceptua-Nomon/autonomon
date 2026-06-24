@@ -227,17 +227,10 @@ readonly REMOTE_DIR="${3:-${HOME}/perceptua-nomon/autonomon}"
 readonly CATALOG_PATH="${NOMON_ROUTINE_CATALOG_PATH:-/var/lib/nomon/routine_catalog.json}"
 readonly SKIP_TESTS="${NOMON_SKIP_TESTS:-false}"
 
-if [[ ! -d "${REMOTE_DIR}" ]]; then
-    echo "Error: ${REMOTE_DIR} does not exist on the Pi." >&2
-    exit 1
-fi
-
 if ! command -v uv >/dev/null 2>&1; then
     echo "Error: uv not found in PATH. Install uv: https://docs.astral.sh/uv/getting-started/" >&2
     exit 1
 fi
-
-cd "${REMOTE_DIR}"
 
 # ── Save current installed version for rollback ────────────────────────────────
 
@@ -252,41 +245,32 @@ else
     echo "  No previous venv found."
 fi
 
-# ── Save current git ref for rollback (release mode only) ─────────────────────
-# Note: in release mode we do a fresh clone, so we save the HEAD of that clone
-# (which will be main/master) as the "previous" state for rollback.
-
-if [[ "${DEPLOY_LOCAL}" != "true" ]]; then
-    PREV_REF="$(git rev-parse HEAD)"
-    PREV_LABEL="$(git describe --tags --exact-match HEAD 2>/dev/null \
-                  || git rev-parse --short HEAD)"
-    echo "  Fresh clone HEAD: ${PREV_LABEL}"
-fi
-
 # ── Resolve target version (pre-flight) ───────────────────────────────────────
 
 if [[ "${DEPLOY_LOCAL}" == "true" ]]; then
+    if [[ ! -d "${REMOTE_DIR}" ]]; then
+        echo "Error: ${REMOTE_DIR} does not exist on the Pi." >&2
+        exit 1
+    fi
     TARGET="${REQUESTED_VERSION}"
     echo "==> Target: ${TARGET} (local source)"
 else
     echo "==> Fresh clone from origin..."
-    _github_repo="https://github.com/anthropics/nomon"
+    _github_repo="https://github.com/perceptua-nomon/autonomon"
     _tmp_clone="$(mktemp -d)"
-    git clone --quiet "${_github_repo}" "${_tmp_clone}"
+    git clone --quiet "${_github_repo}" "${_tmp_clone}/autonomon"
 
-    # Backup existing repo if present and move fresh clone into place
-    if [[ -d "${REMOTE_DIR}" && -d "${REMOTE_DIR}/.git" ]]; then
+    # Backup existing repo and move fresh clone into place
+    if [[ -d "${REMOTE_DIR}" ]]; then
         mv "${REMOTE_DIR}" "${REMOTE_DIR}.backup.$$"
     fi
-    mv "${_tmp_clone}" "${REMOTE_DIR}"
-    cd "${REMOTE_DIR}"
-
-    echo "  Fetching tags from origin..."
-    git fetch --tags --quiet
+    mv "${_tmp_clone}/autonomon" "${REMOTE_DIR}"
+    rm -rf "${_tmp_clone}"
+    echo "  Clone complete ✓"
 
     TARGET="${REQUESTED_VERSION}"
     if [[ -z "${TARGET}" ]]; then
-        TARGET="$(git tag --list 'v*' --sort=-version:refname | head -1)"
+        TARGET="$(git -C "${REMOTE_DIR}" tag --list 'v*' --sort=-version:refname | head -1)"
         if [[ -z "${TARGET}" ]]; then
             echo "Error: no semver tags found in the repository." >&2
             exit 1
@@ -301,6 +285,8 @@ else
 
     echo "==> Target: ${TARGET}"
 fi
+
+cd "${REMOTE_DIR}"
 
 # ── Rollback helper ────────────────────────────────────────────────────────────
 
