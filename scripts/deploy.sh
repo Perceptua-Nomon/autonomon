@@ -156,13 +156,19 @@ fi
 
 # ── SSH helpers ────────────────────────────────────────────────────────────────
 
+# Embed VERSION, DEPLOY_LOCAL, REMOTE_DIR as env vars (not positional args) so
+# SSH can't silently drop empty strings and shift subsequent args.
+_VERSION_QUOTED="$(printf '%q' "${VERSION}")"
+_DEPLOY_LOCAL_QUOTED="$(printf '%q' "${DEPLOY_LOCAL}")"
+_REMOTE_DIR_QUOTED="$(printf '%q' "${NOMON_REMOTE_DIR:-}")"
+
 if [[ -n "${PI_HOST}" ]]; then
     SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
     if [[ -n "${NOMON_SSH_KEY:-}" ]]; then
         SSH_OPTS+=(-i "${NOMON_SSH_KEY}")
     fi
     echo "==> Deploying autonomon${VERSION:+ ${VERSION}} → ${PI_HOST}"
-    RUN_CMD=(ssh "${SSH_OPTS[@]}" "${PI_HOST}" "NOMON_SKIP_TESTS=${SKIP_TESTS} NOMON_SUDO_PASS=${_NOMON_SUDO_PASS_QUOTED} NOMON_ROUTINE_CATALOG_PATH=${_NOMON_ROUTINE_CATALOG_PATH_QUOTED} NOMON_VISION_DETECTOR=${_NOMON_VISION_DETECTOR_QUOTED} NOMON_VISION_MODEL_PATH=${_NOMON_VISION_MODEL_PATH_QUOTED} NOMON_VISION_MODEL_CONFIG=${_NOMON_VISION_MODEL_CONFIG_QUOTED} bash -ls \"\$@\"" --)
+    RUN_CMD=(ssh "${SSH_OPTS[@]}" "${PI_HOST}" "NOMON_SKIP_TESTS=${SKIP_TESTS} NOMON_SUDO_PASS=${_NOMON_SUDO_PASS_QUOTED} NOMON_ROUTINE_CATALOG_PATH=${_NOMON_ROUTINE_CATALOG_PATH_QUOTED} NOMON_VISION_DETECTOR=${_NOMON_VISION_DETECTOR_QUOTED} NOMON_VISION_MODEL_PATH=${_NOMON_VISION_MODEL_PATH_QUOTED} NOMON_VISION_MODEL_CONFIG=${_NOMON_VISION_MODEL_CONFIG_QUOTED} NOMON_DEPLOY_VERSION=${_VERSION_QUOTED} NOMON_DEPLOY_LOCAL=${_DEPLOY_LOCAL_QUOTED} NOMON_DEPLOY_REMOTE_DIR=${_REMOTE_DIR_QUOTED} bash -ls")
 else
     echo "==> Deploying autonomon${VERSION:+ ${VERSION}} locally"
     export NOMON_SKIP_TESTS="${SKIP_TESTS}"
@@ -170,7 +176,10 @@ else
     export NOMON_VISION_DETECTOR="${NOMON_VISION_DETECTOR:-}"
     export NOMON_VISION_MODEL_PATH="${NOMON_VISION_MODEL_PATH:-}"
     export NOMON_VISION_MODEL_CONFIG="${NOMON_VISION_MODEL_CONFIG:-}"
-    RUN_CMD=(bash -ls --)
+    export NOMON_DEPLOY_VERSION="${VERSION}"
+    export NOMON_DEPLOY_LOCAL="${DEPLOY_LOCAL}"
+    export NOMON_DEPLOY_REMOTE_DIR="${NOMON_REMOTE_DIR:-}"
+    RUN_CMD=(bash -ls)
 fi
 
 # ── Local mode: rsync source tree to Pi ───────────────────────────────────────
@@ -207,7 +216,7 @@ fi
 # ── Remote deploy script ───────────────────────────────────────────────────────
 # All steps below run on the Pi (remote or local) via a single shell session.
 
-"${RUN_CMD[@]}" "${VERSION}" "${DEPLOY_LOCAL}" "${NOMON_REMOTE_DIR:-}" << 'END_REMOTE'
+"${RUN_CMD[@]}" << 'END_REMOTE'
 set -euo pipefail
 
 if [[ -n "${NOMON_SUDO_PASS:-}" ]]; then
@@ -221,9 +230,9 @@ else
     sudo() { command sudo "$@"; }
 fi
 
-readonly REQUESTED_VERSION="$1"
-readonly DEPLOY_LOCAL="${2:-false}"
-readonly REMOTE_DIR="${3:-${HOME}/perceptua-nomon/autonomon}"
+readonly REQUESTED_VERSION="${NOMON_DEPLOY_VERSION:-}"
+readonly DEPLOY_LOCAL="${NOMON_DEPLOY_LOCAL:-false}"
+readonly REMOTE_DIR="${NOMON_DEPLOY_REMOTE_DIR:-${HOME}/perceptua-nomon/autonomon}"
 readonly CATALOG_PATH="${NOMON_ROUTINE_CATALOG_PATH:-/var/lib/nomon/routine_catalog.json}"
 readonly SKIP_TESTS="${NOMON_SKIP_TESTS:-false}"
 
