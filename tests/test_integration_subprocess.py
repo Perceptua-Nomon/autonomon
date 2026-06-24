@@ -112,6 +112,11 @@ def _run_routine(
             "NOMON_PLUGIN_TOKEN": "test-token",
             "NOMON_DEVICE_ID": "nomon-it",
             "NOMON_PLUGIN_PARAMS": json.dumps(params),
+            # Suppress the on-device env file: _load_env_file() runs at CLI startup
+            # and would re-inject NOMON_PLUGIN_KEY from /etc/autonomon/autonomon.env,
+            # overriding the pop above and switching auth to challenge-response against
+            # the mock device (which has no key registered).
+            "NOMON_AUTONOMON_ENV_FILE": "/dev/null",
         }
     )
     if extra_env:
