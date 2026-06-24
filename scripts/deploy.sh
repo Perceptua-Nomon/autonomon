@@ -156,13 +156,19 @@ fi
 
 # ── SSH helpers ────────────────────────────────────────────────────────────────
 
+# Embed VERSION, DEPLOY_LOCAL, REMOTE_DIR as env vars (not positional args) so
+# SSH can't silently drop empty strings and shift subsequent args.
+_VERSION_QUOTED="$(printf '%q' "${VERSION}")"
+_DEPLOY_LOCAL_QUOTED="$(printf '%q' "${DEPLOY_LOCAL}")"
+_REMOTE_DIR_QUOTED="$(printf '%q' "${NOMON_REMOTE_DIR:-}")"
+
 if [[ -n "${PI_HOST}" ]]; then
     SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
     if [[ -n "${NOMON_SSH_KEY:-}" ]]; then
         SSH_OPTS+=(-i "${NOMON_SSH_KEY}")
     fi
     echo "==> Deploying autonomon${VERSION:+ ${VERSION}} → ${PI_HOST}"
-    RUN_CMD=(ssh "${SSH_OPTS[@]}" "${PI_HOST}" "NOMON_SKIP_TESTS=${SKIP_TESTS} NOMON_SUDO_PASS=${_NOMON_SUDO_PASS_QUOTED} NOMON_ROUTINE_CATALOG_PATH=${_NOMON_ROUTINE_CATALOG_PATH_QUOTED} NOMON_VISION_DETECTOR=${_NOMON_VISION_DETECTOR_QUOTED} NOMON_VISION_MODEL_PATH=${_NOMON_VISION_MODEL_PATH_QUOTED} NOMON_VISION_MODEL_CONFIG=${_NOMON_VISION_MODEL_CONFIG_QUOTED} bash -ls \"\$@\"" --)
+    RUN_CMD=(ssh "${SSH_OPTS[@]}" "${PI_HOST}" "NOMON_SKIP_TESTS=${SKIP_TESTS} NOMON_SUDO_PASS=${_NOMON_SUDO_PASS_QUOTED} NOMON_ROUTINE_CATALOG_PATH=${_NOMON_ROUTINE_CATALOG_PATH_QUOTED} NOMON_VISION_DETECTOR=${_NOMON_VISION_DETECTOR_QUOTED} NOMON_VISION_MODEL_PATH=${_NOMON_VISION_MODEL_PATH_QUOTED} NOMON_VISION_MODEL_CONFIG=${_NOMON_VISION_MODEL_CONFIG_QUOTED} NOMON_DEPLOY_VERSION=${_VERSION_QUOTED} NOMON_DEPLOY_LOCAL=${_DEPLOY_LOCAL_QUOTED} NOMON_DEPLOY_REMOTE_DIR=${_REMOTE_DIR_QUOTED} bash -ls")
 else
     echo "==> Deploying autonomon${VERSION:+ ${VERSION}} locally"
     export NOMON_SKIP_TESTS="${SKIP_TESTS}"
@@ -170,7 +176,10 @@ else
     export NOMON_VISION_DETECTOR="${NOMON_VISION_DETECTOR:-}"
     export NOMON_VISION_MODEL_PATH="${NOMON_VISION_MODEL_PATH:-}"
     export NOMON_VISION_MODEL_CONFIG="${NOMON_VISION_MODEL_CONFIG:-}"
-    RUN_CMD=(bash -ls --)
+    export NOMON_DEPLOY_VERSION="${VERSION}"
+    export NOMON_DEPLOY_LOCAL="${DEPLOY_LOCAL}"
+    export NOMON_DEPLOY_REMOTE_DIR="${NOMON_REMOTE_DIR:-}"
+    RUN_CMD=(bash -ls)
 fi
 
 # ── Local mode: rsync source tree to Pi ───────────────────────────────────────
@@ -207,7 +216,7 @@ fi
 # ── Remote deploy script ───────────────────────────────────────────────────────
 # All steps below run on the Pi (remote or local) via a single shell session.
 
-"${RUN_CMD[@]}" "${VERSION}" "${DEPLOY_LOCAL}" "${NOMON_REMOTE_DIR:-}" << 'END_REMOTE'
+"${RUN_CMD[@]}" << 'END_REMOTE'
 set -euo pipefail
 
 if [[ -n "${NOMON_SUDO_PASS:-}" ]]; then
@@ -221,23 +230,16 @@ else
     sudo() { command sudo "$@"; }
 fi
 
-readonly REQUESTED_VERSION="$1"
-readonly DEPLOY_LOCAL="${2:-false}"
-readonly REMOTE_DIR="${3:-${HOME}/perceptua-nomon/autonomon}"
+readonly REQUESTED_VERSION="${NOMON_DEPLOY_VERSION:-}"
+readonly DEPLOY_LOCAL="${NOMON_DEPLOY_LOCAL:-false}"
+readonly REMOTE_DIR="${NOMON_DEPLOY_REMOTE_DIR:-${HOME}/perceptua-nomon/autonomon}"
 readonly CATALOG_PATH="${NOMON_ROUTINE_CATALOG_PATH:-/var/lib/nomon/routine_catalog.json}"
 readonly SKIP_TESTS="${NOMON_SKIP_TESTS:-false}"
-
-if [[ ! -d "${REMOTE_DIR}" ]]; then
-    echo "Error: ${REMOTE_DIR} does not exist on the Pi." >&2
-    exit 1
-fi
 
 if ! command -v uv >/dev/null 2>&1; then
     echo "Error: uv not found in PATH. Install uv: https://docs.astral.sh/uv/getting-started/" >&2
     exit 1
 fi
-
-cd "${REMOTE_DIR}"
 
 # ── Save current installed version for rollback ────────────────────────────────
 
@@ -252,27 +254,32 @@ else
     echo "  No previous venv found."
 fi
 
-# ── Save current git ref for rollback (release mode only) ─────────────────────
-
-if [[ "${DEPLOY_LOCAL}" != "true" ]]; then
-    PREV_REF="$(git rev-parse HEAD)"
-    PREV_LABEL="$(git describe --tags --exact-match HEAD 2>/dev/null \
-                  || git rev-parse --short HEAD)"
-    echo "  Current git ref: ${PREV_LABEL}"
-fi
-
 # ── Resolve target version (pre-flight) ───────────────────────────────────────
 
 if [[ "${DEPLOY_LOCAL}" == "true" ]]; then
+    if [[ ! -d "${REMOTE_DIR}" ]]; then
+        echo "Error: ${REMOTE_DIR} does not exist on the Pi." >&2
+        exit 1
+    fi
     TARGET="${REQUESTED_VERSION}"
     echo "==> Target: ${TARGET} (local source)"
 else
-    echo "==> Fetching tags from origin..."
-    git fetch --tags --quiet
+    echo "==> Fresh clone from origin..."
+    _github_repo="https://github.com/Perceptua-Nomon/autonomon.git"
+    _tmp_clone="$(mktemp -d)"
+    git clone --quiet "${_github_repo}" "${_tmp_clone}/autonomon"
+
+    # Backup existing repo and move fresh clone into place
+    if [[ -d "${REMOTE_DIR}" ]]; then
+        mv "${REMOTE_DIR}" "${REMOTE_DIR}.backup.$$"
+    fi
+    mv "${_tmp_clone}/autonomon" "${REMOTE_DIR}"
+    rm -rf "${_tmp_clone}"
+    echo "  Clone complete ✓"
 
     TARGET="${REQUESTED_VERSION}"
     if [[ -z "${TARGET}" ]]; then
-        TARGET="$(git tag --list 'v*' --sort=-version:refname | head -1)"
+        TARGET="$(git -C "${REMOTE_DIR}" tag --list 'v*' --sort=-version:refname | head -1)"
         if [[ -z "${TARGET}" ]]; then
             echo "Error: no semver tags found in the repository." >&2
             exit 1
@@ -285,13 +292,10 @@ else
         exit 1
     fi
 
-    CURRENT_TAG="$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
-    if [[ "${CURRENT_TAG}" == "${TARGET}" ]]; then
-        echo "  Note: already on ${TARGET}; re-running install and verification."
-    fi
-
     echo "==> Target: ${TARGET}"
 fi
+
+cd "${REMOTE_DIR}"
 
 # ── Rollback helper ────────────────────────────────────────────────────────────
 
@@ -304,8 +308,17 @@ rollback() {
     echo "" >&2
     echo "!! Deployment failed. Rolling back..." >&2
 
-    if [[ "${DEPLOY_LOCAL}" != "true" && -n "${PREV_REF:-}" ]]; then
-        git checkout --quiet "${PREV_REF}" || true
+    # In release mode, restore from backup; in local mode, just reinstall.
+    if [[ "${DEPLOY_LOCAL}" != "true" ]]; then
+        # Find and restore the backup directory if it exists
+        for _backup in "${REMOTE_DIR}".backup.*; do
+            if [[ -d "${_backup}" ]]; then
+                rm -rf "${REMOTE_DIR}"
+                mv "${_backup}" "${REMOTE_DIR}"
+                echo "  Restored from backup: ${_backup}" >&2
+                break
+            fi
+        done
     fi
 
     if [[ -n "${PREV_VERSION:-}" ]]; then
@@ -574,4 +587,13 @@ echo "  Routine catalogue: ${CATALOG_PATH} (nomothetic reads this to list/launch
 echo "  Run a routine with:"
 echo "    set -a; . ${PLUGIN_ENV_FILE}; set +a; \\"
 echo "    NOMON_PLUGIN_PARAMS='{\"routine\":\"explore\"}' ${REMOTE_DIR}/.venv/bin/nomon-autonomon"
+
+# Clean up backup directory from release deploy (if deployment succeeded)
+if [[ "${DEPLOY_LOCAL}" != "true" ]]; then
+    for _backup in "${REMOTE_DIR}".backup.*; do
+        if [[ -d "${_backup}" ]]; then
+            rm -rf "${_backup}"
+        fi
+    done
+fi
 END_REMOTE

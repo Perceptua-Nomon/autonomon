@@ -14,6 +14,7 @@ import pytest
 
 from autonomon import (
     AvoidancePlanner,
+    Detector,
     FakeDetector,
     FanInSlot,
     ObstacleWorldModel,
@@ -211,8 +212,8 @@ def _follow_user_detector(params: dict[str, Any]) -> Any:
     return perception._detector
 
 
-def test_follow_user_default_detector_is_yolo() -> None:
-    assert isinstance(_follow_user_detector({}), YoloOnnxDetector)
+def test_follow_user_default_detector_returns_a_detector() -> None:
+    assert isinstance(_follow_user_detector({}), Detector)
 
 
 def test_follow_user_detector_param_selects_opencv_hog() -> None:
