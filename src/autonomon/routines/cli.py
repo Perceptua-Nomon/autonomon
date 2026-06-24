@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import sys
 import uuid
@@ -61,6 +62,27 @@ ClientFactory = Callable[[str, AuthValue], httpx.AsyncClient]
 # Factory for the status reporter, so tests can inject one or disable reporting
 # (pass ``None``). ``(client, routine, run_id, device_id) -> StatusReporter``.
 ReporterFactory = Callable[[httpx.AsyncClient, str, str, str], StatusReporter]
+
+
+def _configure_logging() -> None:
+    """Route library logging to stderr at the ``NOMON_LOG_LEVEL`` level.
+
+    The plugin's stderr is inherited by the nomothetic gateway, so these lines land
+    in its journal (``journalctl -u nomothetic-api``). Default ``WARNING`` keeps a
+    normal run quiet; set ``NOMON_LOG_LEVEL=INFO`` (or ``DEBUG``) to trace
+    per-frame detections and planner decisions when diagnosing the field. stdout is
+    left untouched — it carries the NDJSON lifecycle events (the source of truth).
+    """
+    level_name = os.environ.get("NOMON_LOG_LEVEL", "WARNING").upper()
+    level = getattr(logging, level_name, logging.WARNING)
+    logging.basicConfig(
+        stream=sys.stderr,
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    # httpx/httpcore are chatty at DEBUG; keep them at WARNING regardless.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def emit(event_type: str, data: dict[str, Any]) -> None:
@@ -257,6 +279,7 @@ def main() -> int:
     error).
     """
     _load_env_file()
+    _configure_logging()
     device_url = os.environ.get("NOMON_DEVICE_URL", "")
     raw_params = os.environ.get("NOMON_PLUGIN_PARAMS", "{}")
     device_id = os.environ.get("NOMON_DEVICE_ID", "nomon")

@@ -110,7 +110,8 @@ scaffolding remains). The `explore` routine uses:
 - World model: `ObstacleWorldModel` — detects obstacle/cliff conditions
 - Planning: `AvoidancePlanner` — chooses forward / backup+turn / stop strategy
 - Action: `VehicleAction` — calls `/api/drive`, `/api/steer`,
-  `/api/hat/motor/stop`
+  `/api/hat/motor/stop`, and (for `follow-user` camera tracking)
+  `/api/camera/pan`, `/api/camera/tilt`
 
 See the **Routines** section below and ADR-003 for the registry design.
 
@@ -183,8 +184,11 @@ tracked in the roadmap):
   the front sensor clears (`explore` defaults this to 2.5 s; the layer default is
   0.0 = re-evaluate immediately).
 - **`VehicleAction`** (`action.vehicle`) — executes plan actions in priority
-  order, mapping `drive`/`steer`/`stop` to `POST /api/drive`, `/api/steer`,
-  `/api/hat/motor/stop`. Injected httpx client per ADR-002; emits an
+  order, mapping `drive`/`steer`/`stop`/`pan`/`tilt` to `POST /api/drive`,
+  `/api/steer`, `/api/hat/motor/stop`, `/api/camera/pan`, `/api/camera/tilt`.
+  `pan`/`tilt` move the camera servos only, so (unlike `drive`/`steer`) a failed
+  camera command does not trigger a motor safety stop. Injected httpx client per
+  ADR-002; emits an
   `ActionResult` per action (best-effort onto an optional telemetry queue — the
   Phase 7 seam); transient HTTP/timeout errors are recorded, not fatal.
   **Renews the actuator lease**: `drive`/`steer` carry a TTL (`ttl_ms`) and
@@ -468,7 +472,7 @@ onto layer constructor arguments is the factory's responsibility.
 | Routine | Example params | Maps onto |
 |---------|----------------|-----------|
 | `explore` | `obstacle_threshold_cm`, `forward_speed_pct`, `turn_angle_deg`, `cliff_threshold` | `ObstacleWorldModel` + `AvoidancePlanner` constructor args |
-| `follow-user` | `target_distance_cm`, `max_speed_pct`, target-source selector | the new follow-layer constructor args |
+| `follow-user` | `target_distance_cm` (≈ 2 ft default), `max_speed_pct`, `pan_gain`/`tilt_gain`, `search_step_deg`, `body_rotate_*` | `VisionPerception` + `TargetWorldModel` + `FollowPlanner` constructor args |
 
 ### Lifecycle and manifest relationship
 
@@ -491,9 +495,9 @@ behaviour:
 | Layer | `explore` | `follow-user` |
 |-------|-----------|---------------|
 | Perception | `Perceptron.ultrasonic` (+ `grayscale`) — reused | **new** vision perception impl: pulls raw camera frames from nomothetic and runs person detection *in autonomon* (ADR-004) — not a nomothetic endpoint |
-| World Model | `ObstacleWorldModel` — reused | **new** target-position world model |
-| Planning | `AvoidancePlanner` — reused | **new** pursuit planner |
-| Action | `VehicleAction` — reused | `VehicleAction` — reused |
+| World Model | `ObstacleWorldModel` — reused | **new** target-position world model (tracks bearing, vertical bearing, distance) |
+| Planning | `AvoidancePlanner` — reused | **new** `FollowPlanner`: camera pan/tilt tracking, coupled body steering, distance-keeping, and camera-sweep + body-pivot search |
+| Action | `VehicleAction` — reused | `VehicleAction` — reused (now also `pan`/`tilt`) |
 
 `explore` is pure wiring of what already exists. `follow-user` is the proof the
 registry is worth building: it reuses the action layer and the whole `Pipeline`
@@ -514,7 +518,7 @@ never to add processing of data already served.
 |-------|-----------|-----------------|
 | Perception (sensors) | raw in | `GET /api/sensor/ultrasonic`, `GET /api/sensor/grayscale` (raw ADC), `GET /api/hat/battery` |
 | Perception (vision, `follow-user`) | raw in | `GET /api/camera/frame` → `image/jpeg` (single raw frame) |
-| Action | actions out | `POST /api/drive`, `POST /api/steer`, `POST /api/hat/motor/stop` |
+| Action | actions out | `POST /api/drive`, `POST /api/steer`, `POST /api/hat/motor/stop`, `POST /api/camera/pan`, `POST /api/camera/tilt` (camera tracking/search, `follow-user`) |
 
 **Raw camera frames (`follow-user`):** `GET /api/camera/frame` returns a
 single raw JPEG (`image/jpeg`). Note `POST /api/camera/capture` writes a file to

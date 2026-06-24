@@ -27,6 +27,8 @@ _ENDPOINTS = {
     "drive": "/api/drive",
     "steer": "/api/steer",
     "stop": "/api/hat/motor/stop",
+    "pan": "/api/camera/pan",
+    "tilt": "/api/camera/tilt",
 }
 
 # Methods that set motion. If one of these fails to reach the device (timeout,
@@ -47,6 +49,12 @@ class VehicleAction(ActionBase):
     | ``drive`` | ``POST /api/drive``   | ``{"speed_pct", "ttl_ms"}``   |
     | ``steer`` | ``POST /api/steer``   | ``{"angle_deg", "ttl_ms"}``   |
     | ``stop``  | ``POST /api/hat/motor/stop`` | (none)                 |
+    | ``pan``   | ``POST /api/camera/pan``  | ``{"angle_deg", "ttl_ms"}`` |
+    | ``tilt``  | ``POST /api/camera/tilt`` | ``{"angle_deg", "ttl_ms"}`` |
+
+    ``pan`` and ``tilt`` move the camera servos only; a failure to land one does
+    not endanger the robot, so (unlike ``drive``/``steer``) it does not trigger a
+    motor safety stop.
 
     This is the only layer permitted to make state-mutating HTTP calls. Per
     ADR-002 it receives a pre-configured ``httpx.AsyncClient`` (base URL,
@@ -274,7 +282,7 @@ class VehicleAction(ActionBase):
         """Build the JSON body for a known method. Raises KeyError if a param is missing."""
         if method == "drive":
             return {"speed_pct": params["speed_pct"], "ttl_ms": self._ttl_ms}
-        if method == "steer":
+        if method in ("steer", "pan", "tilt"):
             return {"angle_deg": params["angle_deg"], "ttl_ms": self._ttl_ms}
         return None  # stop: no body
 

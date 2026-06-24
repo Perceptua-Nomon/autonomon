@@ -30,6 +30,7 @@ class TargetWorldModel(WorldModelBase):
 
         {"target_visible": bool,
          "target_bearing_deg": float | None,
+         "target_vertical_bearing_deg": float | None,
          "target_distance_cm": float | None}
 
     Parameters
@@ -65,6 +66,7 @@ class TargetWorldModel(WorldModelBase):
         self._emit_distance_epsilon_cm = emit_distance_epsilon_cm
         self._visible = False
         self._bearing: float | None = None
+        self._vertical_bearing: float | None = None
         self._distance: float | None = None
         self._last_seen: float | None = None
         self._last_emitted: dict[str, Any] | None = None
@@ -97,8 +99,10 @@ class TargetWorldModel(WorldModelBase):
         if not event.data.get("detected"):
             return
         bearing = event.data.get("target_bearing_deg")
+        vertical_bearing = event.data.get("target_vertical_bearing_deg")
         distance = event.data.get("target_distance_cm")
         self._bearing = self._ema(self._bearing, bearing)
+        self._vertical_bearing = self._ema(self._vertical_bearing, vertical_bearing)
         self._distance = self._ema(self._distance, distance)
         self._visible = True
         self._last_seen = now
@@ -110,6 +114,7 @@ class TargetWorldModel(WorldModelBase):
         if self._last_seen is None or now - self._last_seen > self._lost_target_timeout_s:
             self._visible = False
             self._bearing = None
+            self._vertical_bearing = None
             self._distance = None
 
     def _ema(self, prev: float | None, measurement: Any) -> float | None:
@@ -124,6 +129,7 @@ class TargetWorldModel(WorldModelBase):
         state: dict[str, Any] = {
             "target_visible": self._visible,
             "target_bearing_deg": self._bearing if self._visible else None,
+            "target_vertical_bearing_deg": self._vertical_bearing if self._visible else None,
             "target_distance_cm": self._distance if self._visible else None,
         }
         if not self._should_emit(state):
@@ -152,10 +158,15 @@ class TargetWorldModel(WorldModelBase):
         bearing_moved = self._delta_exceeds(
             new["target_bearing_deg"], old["target_bearing_deg"], self._emit_bearing_epsilon_deg
         )
+        vertical_moved = self._delta_exceeds(
+            new["target_vertical_bearing_deg"],
+            old["target_vertical_bearing_deg"],
+            self._emit_bearing_epsilon_deg,
+        )
         distance_moved = self._delta_exceeds(
             new["target_distance_cm"], old["target_distance_cm"], self._emit_distance_epsilon_cm
         )
-        return bearing_moved or distance_moved
+        return bearing_moved or vertical_moved or distance_moved
 
     @staticmethod
     def _delta_exceeds(new: float | None, old: float | None, epsilon: float) -> bool:

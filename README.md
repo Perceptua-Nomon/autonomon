@@ -14,7 +14,7 @@ A **routine** is a named behaviour that wires the four layers into a pipeline:
 | Routine | What it does | Layers |
 |---------|--------------|--------|
 | `explore` | Obstacle/cliff-avoidance wandering | ultrasonic (+ grayscale) → obstacle world model → avoidance planner → vehicle action |
-| `follow-user` | Vision person-following | camera-frame person detection → target world model → pursuit planner → vehicle action |
+| `follow-user` | Vision person-following with camera tracking, look-around search, and ~2 ft distance-keeping | camera-frame person detection → target world model → follow planner (camera pan/tilt + drive/steer) → vehicle action |
 
 ## Develop
 

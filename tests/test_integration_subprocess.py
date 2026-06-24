@@ -173,4 +173,4 @@ def test_follow_user_routine_pursues_a_fake_target() -> None:
     types = [e["type"] for e in events]
     assert "running" in types
     assert "/api/camera/frame" in device.gets  # the vision layer pulled raw frames
-    assert "/api/drive" in device.posts  # pursuit drove toward the target
+    assert "/api/drive" in device.posts  # the follower drove toward the target

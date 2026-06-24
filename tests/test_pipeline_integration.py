@@ -129,6 +129,62 @@ async def test_clear_path_cruises_forward() -> None:
     assert any(b["speed_pct"] > 0 for b in drive_bodies)
 
 
+def _vision_client() -> AsyncMock:
+    """Mock device for ``follow-user``: a raw JPEG frame on GET, 200 on every POST."""
+    client = AsyncMock(spec=httpx.AsyncClient)
+
+    async def _get(path: str) -> MagicMock:
+        resp = MagicMock(spec=httpx.Response)
+        resp.content = b"\xff\xd8jpeg"
+        resp.json.return_value = {"timestamp": "t"}
+        resp.raise_for_status = MagicMock()
+        return resp
+
+    client.get.side_effect = _get
+    client.post.return_value = _response({"timestamp": "t"})
+    return client
+
+
+def _build_follow_pipeline(
+    client: AsyncMock, results: asyncio.Queue, params: dict[str, Any] | None = None  # type: ignore[type-arg]
+) -> Pipeline:
+    pipeline = get_routine("follow-user")(client, "nomon-test", params or {})
+    action_impl = cast(VehicleAction, pipeline._slots["action"].impl)  # type: ignore[union-attr]
+    action_impl._results = results
+    return pipeline
+
+
+@pytest.mark.asyncio
+async def test_follow_user_tracks_offcentre_person(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A person to the right of frame centre (cx=0.8), far away (small box height).
+    monkeypatch.setenv(
+        "NOMON_VISION_FAKE_DETECTIONS",
+        '[{"cx": 0.8, "cy": 0.5, "w": 0.2, "h": 0.2, "confidence": 0.9}]',
+    )
+    client = _vision_client()
+    results: asyncio.Queue[ActionResult] = asyncio.Queue()
+
+    await _run_until_first_result(_build_follow_pipeline(client, results), results)
+
+    posted = [c.args[0] for c in client.post.await_args_list]
+    assert "/api/camera/pan" in posted  # camera tracks toward the person
+    assert "/api/drive" in posted  # and the robot closes distance
+
+
+@pytest.mark.asyncio
+async def test_follow_user_searches_when_no_person(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NOMON_VISION_FAKE_DETECTIONS", "[]")  # no detections
+    client = _vision_client()
+    results: asyncio.Queue[ActionResult] = asyncio.Queue()
+
+    await _run_until_first_result(_build_follow_pipeline(client, results), results)
+
+    posted = [c.args[0] for c in client.post.await_args_list]
+    assert "/api/camera/pan" in posted  # camera sweeps to look around
+    assert "/api/hat/motor/stop" in posted  # motor idle while scanning
+    assert "/api/drive" not in posted  # not driving during a (non-exhausted) sweep
+
+
 @pytest.mark.asyncio
 async def test_pipeline_shuts_down_cleanly() -> None:
     client = _device_client(distance_cm=10.0)

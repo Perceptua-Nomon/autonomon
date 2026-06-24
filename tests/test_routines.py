@@ -17,12 +17,12 @@ from autonomon import (
     Detector,
     FakeDetector,
     FanInSlot,
+    FollowPlanner,
     ObstacleWorldModel,
     OpenCvDnnDetector,
     OpenCvHogDetector,
     Perceptron,
     Pipeline,
-    PursuitPlanner,
     TargetWorldModel,
     UnknownRoutineError,
     VehicleAction,
@@ -164,7 +164,7 @@ def test_follow_user_wires_the_new_layers_and_reuses_action() -> None:
     slots = pipeline._slots
     assert isinstance(slots["perception"]._impl, VisionPerception)  # type: ignore[union-attr]
     assert isinstance(slots["world_model"]._impl, TargetWorldModel)  # type: ignore[union-attr]
-    assert isinstance(slots["planner"]._impl, PursuitPlanner)  # type: ignore[union-attr]
+    assert isinstance(slots["planner"]._impl, FollowPlanner)  # type: ignore[union-attr]
     assert isinstance(slots["action"]._impl, VehicleAction)  # type: ignore[union-attr]
 
 
@@ -187,17 +187,29 @@ def test_follow_user_params_map_to_layer_args() -> None:
         "max_speed_pct": 40.0,
         "confidence_threshold": 0.7,
         "camera_hfov_deg": 62.0,
+        "camera_vfov_deg": 38.0,
         "lost_target_timeout_s": 2.0,
+        "pan_gain": 0.7,
+        "center_deadband_deg": 6.0,
+        "min_drive_speed_pct": 30.0,
+        "max_steer_deg": 20.0,
+        "search_step_deg": 12.0,
     }
     pipeline = get_routine("follow-user")(_client(), "nomon-1", params)
     perception = cast(VisionPerception, pipeline._slots["perception"]._impl)  # type: ignore[union-attr]
     world_model = cast(TargetWorldModel, pipeline._slots["world_model"]._impl)  # type: ignore[union-attr]
-    planner = cast(PursuitPlanner, pipeline._slots["planner"]._impl)  # type: ignore[union-attr]
+    planner = cast(FollowPlanner, pipeline._slots["planner"]._impl)  # type: ignore[union-attr]
     assert perception._confidence_threshold == 0.7
     assert perception._camera_hfov_deg == 62.0
+    assert perception._camera_vfov_deg == 38.0
     assert world_model._lost_target_timeout_s == 2.0
     assert planner._target_distance_cm == 120.0
     assert planner._max_speed_pct == 40.0
+    assert planner._pan_gain == 0.7
+    assert planner._center_deadband_deg == 6.0
+    assert planner._min_drive_speed_pct == 30.0
+    assert planner._max_steer_deg == 20.0
+    assert planner._search_step_deg == 12.0
 
 
 # ---------------------------------------------------------------------------
