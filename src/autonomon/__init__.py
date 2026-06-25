@@ -20,6 +20,7 @@ from autonomon.planning.avoidance import AvoidancePlanner
 from autonomon.planning.base import PlannerBase
 from autonomon.planning.follow import FollowPlanner
 from autonomon.planning.pursuit import PursuitPlanner
+from autonomon.planning.rule import RulePlanner
 from autonomon.routines import (
     ROUTINES,
     RoutineFactory,
@@ -48,6 +49,7 @@ __all__ = [
     "ObstacleWorldModel",
     "TargetWorldModel",
     "AvoidancePlanner",
+    "RulePlanner",
     "PursuitPlanner",
     "FollowPlanner",
     "VehicleAction",
