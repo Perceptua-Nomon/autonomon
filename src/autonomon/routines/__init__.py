@@ -19,6 +19,7 @@ from typing import Any
 
 from autonomon.routines.explore import EXPLORE_PARAMS_SCHEMA, build_explore
 from autonomon.routines.follow_user import FOLLOW_USER_PARAMS_SCHEMA, build_follow_user
+from autonomon.routines.patrol import PATROL_PARAMS_SCHEMA, build_patrol
 from autonomon.routines.registry import (
     ROUTINES,
     RoutineFactory,
@@ -32,6 +33,7 @@ from autonomon.routines.registry import (
 _PARAM_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
     "explore": EXPLORE_PARAMS_SCHEMA,
     "follow-user": FOLLOW_USER_PARAMS_SCHEMA,
+    "patrol": PATROL_PARAMS_SCHEMA,
 }
 
 
@@ -63,5 +65,7 @@ __all__ = [
     "EXPLORE_PARAMS_SCHEMA",
     "build_follow_user",
     "FOLLOW_USER_PARAMS_SCHEMA",
+    "build_patrol",
+    "PATROL_PARAMS_SCHEMA",
     "nomon_manifest",
 ]

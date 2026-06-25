@@ -1,0 +1,48 @@
+# `patrol` rule table for RulePlanner — memory-aware area patrolling.
+#
+# Consumed by build_patrol() over OccupancyWorldModel, whose state adds the
+# `recently_blocked` memory field on top of obstacle_ahead/cliff_detected. The
+# `caution` rule below keys on that memory — a behaviour the boolean
+# ObstacleWorldModel cannot express — so this table is the concrete consumer
+# that justifies Phases 3 & 4 together (ADR-006 / ADR-007).
+#
+# First match wins; the catch-all `cruise` rule is last. Edit/replace this file
+# (or point `rules_path` elsewhere) to retune patrol without code changes.
+
+[[rules]]
+name = "avoid_cliff"
+hold_s = 2.5
+when = { cliff_detected = true }
+actions = [
+    { method = "stop", params = {}, priority = 0 },
+    { method = "drive", params = { speed_pct = -50.0 }, priority = 1 },
+    { method = "steer", params = { angle_deg = 135.0 }, priority = 2 },
+]
+
+[[rules]]
+name = "avoid"
+hold_s = 1.5
+when = { obstacle_ahead = true }
+actions = [
+    { method = "stop", params = {}, priority = 0 },
+    { method = "drive", params = { speed_pct = -45.0 }, priority = 1 },
+    { method = "steer", params = { angle_deg = 125.0 }, priority = 2 },
+]
+
+# Path is clear *now*, but an obstacle was seen within decay_s: creep forward
+# instead of darting, so the robot eases out of recently-cluttered space.
+[[rules]]
+name = "caution"
+when = { recently_blocked = true }
+actions = [
+    { method = "steer", params = { angle_deg = 90.0 }, priority = 0 },
+    { method = "drive", params = { speed_pct = 25.0 }, priority = 1 },
+]
+
+[[rules]]
+name = "cruise"
+when = {}
+actions = [
+    { method = "steer", params = { angle_deg = 90.0 }, priority = 0 },
+    { method = "drive", params = { speed_pct = 45.0 }, priority = 1 },
+]

@@ -28,6 +28,7 @@ from autonomon.routines import (
     available_routines,
     build_explore,
     build_follow_user,
+    build_patrol,
     get_routine,
 )
 from autonomon.slot import LayerSlot, SlotState
@@ -75,6 +76,7 @@ __all__ = [
     "get_routine",
     "build_explore",
     "build_follow_user",
+    "build_patrol",
     # Message types
     "PerceptionEvent",
     "WorldStateUpdate",
