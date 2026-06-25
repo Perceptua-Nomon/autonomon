@@ -387,7 +387,9 @@ def build_follow_user(
         max_steer_step_deg=params.get("max_steer_step_deg", _DEFAULT_MAX_STEER_STEP_DEG),
         drive_burst_s=params.get("drive_burst_s", _DEFAULT_DRIVE_BURST_S),
         steer_burst_s=params.get("steer_burst_s", _DEFAULT_STEER_BURST_S),
-        camera_steer_comp_gain=params.get("camera_steer_comp_gain", _DEFAULT_CAMERA_STEER_COMP_GAIN),
+        camera_steer_comp_gain=params.get(
+            "camera_steer_comp_gain", _DEFAULT_CAMERA_STEER_COMP_GAIN
+        ),
         pan_gain=params.get("pan_gain", _DEFAULT_PAN_GAIN),
         tilt_gain=params.get("tilt_gain", _DEFAULT_TILT_GAIN),
         center_deadband_deg=params.get("center_deadband_deg", _DEFAULT_CENTER_DEADBAND_DEG),
