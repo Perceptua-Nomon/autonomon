@@ -5,7 +5,13 @@ The proof that the routine registry generalises beyond wiring (ADR-003): it reus
 perception layer (person detection in autonomon, ADR-004), a target world model,
 and a pursuit planner::
 
-    VisionPerception -> TargetWorldModel -> FollowPlanner -> VehicleAction
+    (VisionPerception + ultrasonic) -> TargetWorldModel -> FollowPlanner -> VehicleAction
+
+Vision and the forward ultrasonic sensor fan in to the world model: vision
+supplies the target bearing (and a coarse range), while the ultrasonic supplies a
+true close-range distance for standoff control — the camera's box-height range
+saturates at ~75 cm, so without ultrasonic the robot can never sense "too close"
+to back up.
 
 The :class:`FollowPlanner` pans/tilts the camera to keep the person centred
 capture-to-capture, steers the body toward the camera so the camera re-centres
@@ -45,6 +51,7 @@ from typing import Any
 import httpx
 
 from autonomon.action.vehicle import VehicleAction
+from autonomon.fan_in import FanInSlot
 from autonomon.perception.detector import (
     Detector,
     FakeDetector,
@@ -52,6 +59,7 @@ from autonomon.perception.detector import (
     OpenCvHogDetector,
     YoloOnnxDetector,
 )
+from autonomon.perception.perceptron import Perceptron
 from autonomon.perception.vision import VisionPerception
 from autonomon.pipeline import Pipeline
 from autonomon.planning.follow import FollowPlanner
@@ -61,7 +69,11 @@ _DEFAULT_TARGET_DISTANCE_CM = 60.0  # ≈ 2 ft
 _DEFAULT_MAX_SPEED_PCT = 60.0
 _DEFAULT_MIN_DRIVE_SPEED_PCT = 40.0
 _DEFAULT_MAX_STEER_DEG = 30.0
-_DEFAULT_DRIVE_BURST_S = 0.6
+_DEFAULT_MAX_STEER_STEP_DEG = 10.0
+# Longer than the ~1.2s detector period so a fresh frame keeps the drive going
+# (smooth, continuous) rather than pausing between every detection; only a real
+# loss (gap > this) pauses the motor.
+_DEFAULT_DRIVE_BURST_S = 1.5
 _DEFAULT_CONFIDENCE_THRESHOLD = 0.5
 _DEFAULT_CAMERA_HFOV_DEG = 70.0
 _DEFAULT_CAMERA_VFOV_DEG = 43.0
@@ -85,13 +97,19 @@ _DEFAULT_PAN_MIN_DEG = 20.0
 _DEFAULT_PAN_MAX_DEG = 160.0
 _DEFAULT_TILT_MIN_DEG = 60.0
 _DEFAULT_TILT_MAX_DEG = 120.0
-_DEFAULT_SEARCH_STEP_DEG = 10.0
+# Phase advance per glance during the look-around roll.
+# 30° = 12 positions per full roll (vs. 36 at 10°) — faster sweep, still overlapping coverage.
+_DEFAULT_SEARCH_STEP_DEG = 30.0
 # Per-glance dwell (~one detector period) so each position yields a sharp, settled
 # frame the detector can use, rather than motion-blurred ones.
 _DEFAULT_SEARCH_INTERVAL_S = 1.2
 _DEFAULT_SEARCH_TILT_OFFSET_DEG = 15.0
 _DEFAULT_BODY_ROTATE_SPEED_PCT = 60.0
 _DEFAULT_BODY_ROTATE_DURATION_S = 1.5
+# Seconds to hold the steered angle before returning wheels to straight mid-burst.
+_DEFAULT_STEER_BURST_S = 0.3
+# Pan degrees of counter-steer compensation per degree of wheel-steer deflection.
+_DEFAULT_CAMERA_STEER_COMP_GAIN = 0.5
 
 # Env hooks (deploy/runtime concerns, not behaviour params).
 _ENV_DETECTOR = "NOMON_VISION_DETECTOR"
@@ -126,6 +144,14 @@ FOLLOW_USER_PARAMS_SCHEMA: dict[str, dict[str, Any]] = {
         ),
         "default": _DEFAULT_MAX_STEER_DEG,
     },
+    "max_steer_step_deg": {
+        "type": "number",
+        "description": (
+            "Max change in tracking steer angle per adjustment (deg); the wheels "
+            "ramp toward the target in steps this size for a smoother turn. Default 10."
+        ),
+        "default": _DEFAULT_MAX_STEER_STEP_DEG,
+    },
     "drive_burst_s": {
         "type": "number",
         "description": (
@@ -134,6 +160,26 @@ FOLLOW_USER_PARAMS_SCHEMA: dict[str, dict[str, Any]] = {
             "bursts rather than running on a stale heading. Default 0.6."
         ),
         "default": _DEFAULT_DRIVE_BURST_S,
+    },
+    "steer_burst_s": {
+        "type": "number",
+        "description": (
+            "Seconds into a drive burst to hold the steered angle; after this the "
+            "wheels return to straight for the remainder of the burst so the camera "
+            "doesn't drift far from where the user was detected. Must be < drive_burst_s. "
+            "Default 0.3."
+        ),
+        "default": _DEFAULT_STEER_BURST_S,
+    },
+    "camera_steer_comp_gain": {
+        "type": "number",
+        "description": (
+            "Feed-forward pan compensation per degree of wheel-steer deflection: when "
+            "the wheels turn, the body sweeps the camera off the user, so the pan servo "
+            "is pre-offset in the opposite direction by gain × deflection. Sign is "
+            "derived automatically from pan_gain. Default 0.5."
+        ),
+        "default": _DEFAULT_CAMERA_STEER_COMP_GAIN,
     },
     "confidence_threshold": {
         "type": "number",
@@ -314,7 +360,7 @@ def build_follow_user(
         A fully wired pipeline ready to ``run()``.
     """
     detector = _build_detector(params)
-    perception = VisionPerception(
+    vision = VisionPerception(
         client,
         device_id,
         detector,
@@ -322,6 +368,12 @@ def build_follow_user(
         camera_vfov_deg=params.get("camera_vfov_deg", _DEFAULT_CAMERA_VFOV_DEG),
         confidence_threshold=params.get("confidence_threshold", _DEFAULT_CONFIDENCE_THRESHOLD),
     )
+    # Fan the forward ultrasonic sensor in beside vision: the camera's box-height
+    # range saturates at ~75 cm (a close person fills the frame), so it can never
+    # see "too close" to back up. The ultrasonic gives a true close-range distance;
+    # the world model prefers it for distance-keeping while using vision purely for
+    # bearing. (Ultrasonic is body-fixed — valid once the body faces the user.)
+    perception = FanInSlot("perception", [vision, Perceptron.ultrasonic(client, device_id)])
     world_model = TargetWorldModel(
         device_id=device_id,
         lost_target_timeout_s=params.get("lost_target_timeout_s", _DEFAULT_LOST_TARGET_TIMEOUT_S),
@@ -332,7 +384,10 @@ def build_follow_user(
         max_speed_pct=params.get("max_speed_pct", _DEFAULT_MAX_SPEED_PCT),
         min_drive_speed_pct=params.get("min_drive_speed_pct", _DEFAULT_MIN_DRIVE_SPEED_PCT),
         max_steer_deg=params.get("max_steer_deg", _DEFAULT_MAX_STEER_DEG),
+        max_steer_step_deg=params.get("max_steer_step_deg", _DEFAULT_MAX_STEER_STEP_DEG),
         drive_burst_s=params.get("drive_burst_s", _DEFAULT_DRIVE_BURST_S),
+        steer_burst_s=params.get("steer_burst_s", _DEFAULT_STEER_BURST_S),
+        camera_steer_comp_gain=params.get("camera_steer_comp_gain", _DEFAULT_CAMERA_STEER_COMP_GAIN),
         pan_gain=params.get("pan_gain", _DEFAULT_PAN_GAIN),
         tilt_gain=params.get("tilt_gain", _DEFAULT_TILT_GAIN),
         center_deadband_deg=params.get("center_deadband_deg", _DEFAULT_CENTER_DEADBAND_DEG),

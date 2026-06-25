@@ -70,6 +70,10 @@ class FollowPlanner(PlannerBase):
         Hard cap on steering deflection from centre (deg); every steer command —
         tracking and the search pivot — is clamped to ``[90 - max_steer_deg,
         90 + max_steer_deg]``. Default 30.0.
+    max_steer_step_deg : float
+        Max change in the tracking steer angle per adjustment (deg). The wheels
+        ramp toward the target angle in steps this size rather than snapping, so a
+        target far to one side is approached over several frames. Default 10.0.
     speed_kp : float
         Drive percent per cm of distance error. Default 1.0.
     drive_burst_s : float
@@ -78,11 +82,26 @@ class FollowPlanner(PlannerBase):
         hold) until the next one, so the robot drives in short bursts and re-aims
         each detection instead of running open-loop on a stale heading between the
         sparse (~0.8 Hz) detections. Default 0.6.
+    steer_burst_s : float
+        Seconds into a drive burst to hold the steered angle before returning the
+        wheels to straight. After this window the robot continues driving forward
+        (not steered) for the rest of the burst, limiting how far the camera drifts
+        from the bearing where the user was detected. Must be < drive_burst_s to
+        have any effect; ignored when steer_burst_s ≥ drive_burst_s. Default 0.3.
     distance_deadband_cm : float
-        No drive while within this many cm of the standoff. Default 15.0.
+        No drive while within this many cm of the standoff — wide enough that
+        smoothed ultrasonic noise near the setpoint does not make the drive hunt.
+        Default 20.0.
     steer_quantum_deg, speed_quantum_pct : float
         Steering angle / drive speed are rounded to these steps for debouncing.
         Defaults 5.0 / 5.0.
+    camera_steer_comp_gain : float
+        Feed-forward pan compensation applied when a steer command is issued:
+        ``effective_pan = pan_angle - pan_dir × gain × (steer - 90)``.  When the
+        wheels turn right the body physically rotates right, sweeping the camera
+        off the user; this offsets the pan servo in the opposite direction so the
+        user stays in frame during the steer burst.  The sign is derived
+        automatically from ``pan_gain`` (positive or negative servo).  Default 0.5.
     pan_gain, tilt_gain : float
         Camera pan/tilt degrees commanded per degree of in-frame bearing error
         (proportional centring). Default 0.5 each. **Set negative to invert** a
@@ -123,11 +142,14 @@ class FollowPlanner(PlannerBase):
         min_drive_speed_pct: float = 35.0,
         steer_gain: float = 2.0,
         max_steer_deg: float = 30.0,
+        max_steer_step_deg: float = 10.0,
         speed_kp: float = 1.0,
         drive_burst_s: float = 0.6,
-        distance_deadband_cm: float = 15.0,
+        steer_burst_s: float = 0.3,
+        distance_deadband_cm: float = 20.0,
         steer_quantum_deg: float = 5.0,
         speed_quantum_pct: float = 5.0,
+        camera_steer_comp_gain: float = 0.5,
         pan_gain: float = 0.5,
         tilt_gain: float = 0.5,
         center_deadband_deg: float = 4.0,
@@ -148,11 +170,14 @@ class FollowPlanner(PlannerBase):
         self._min_drive_speed_pct = min_drive_speed_pct
         self._steer_gain = steer_gain
         self._max_steer_deg = max_steer_deg
+        self._max_steer_step_deg = max_steer_step_deg
         self._speed_kp = speed_kp
         self._drive_burst_s = drive_burst_s
+        self._steer_burst_s = steer_burst_s
         self._distance_deadband_cm = distance_deadband_cm
         self._steer_quantum_deg = steer_quantum_deg
         self._speed_quantum_pct = speed_quantum_pct
+        self._camera_steer_comp_gain = camera_steer_comp_gain
         self._pan_gain = pan_gain
         self._tilt_gain = tilt_gain
         self._center_deadband_deg = center_deadband_deg
@@ -191,8 +216,16 @@ class FollowPlanner(PlannerBase):
         # stale heading between sparse detections.
         self._last_detect_at: float | None = None
         self._driving = False
+        self._straightened = False
         self._last_steer = _STRAIGHT_ANGLE_DEG
         self._last_speed = 0.0
+        # Effective (compensation-applied) pan last sent to the servo; held by _hold/_straighten.
+        self._last_commanded_pan = self._pan_angle
+        # Vision frame last acted on. Tracking keys off a *new vision frame*
+        # (vision_seq), not every world-state update — the ultrasonic emits
+        # frequent distance-only updates carrying a stale bearing, and
+        # re-integrating the pan on those makes the camera run away.
+        self._last_vision_seq: int | None = None
         self._last_command: tuple[Any, ...] | None = None
         self._plan_counter = 0
         self._stop = asyncio.Event()
@@ -223,24 +256,42 @@ class FollowPlanner(PlannerBase):
         if state is None:
             return
         if state.get("target_visible"):
-            if self._state_dirty:
-                self._state_dirty = False
+            # Only a *new vision frame* drives tracking (camera/steer/drive).
+            # Distance-only updates (frequent, from the ultrasonic) carry a stale
+            # bearing; acting on them would walk the camera off the target.
+            # A state without ``vision_seq`` (e.g. unit tests) is always fresh;
+            # the real world model stamps a per-frame seq so distance-only updates
+            # are skipped.
+            vision_seq = state.get("vision_seq")
+            fresh_frame = self._state_dirty and (
+                vision_seq is None or vision_seq != self._last_vision_seq
+            )
+            self._state_dirty = False
+            if fresh_frame:
+                self._last_vision_seq = vision_seq
                 command, actions = self._track(state)
                 self._last_detect_at = now
                 self._driving = self._last_speed != 0.0
-            elif (
-                self._driving
-                and self._last_detect_at is not None
-                and now - self._last_detect_at >= self._drive_burst_s
-            ):
-                # Drive burst elapsed with no fresh detection: pause the motor and
-                # hold the camera/steer until the next detection re-aims us.
-                self._driving = False
-                command, actions = self._hold()
+                self._straightened = False
+            elif self._driving and self._last_detect_at is not None:
+                elapsed = now - self._last_detect_at
+                if elapsed >= self._drive_burst_s:
+                    # Burst elapsed: pause the motor and hold until the next detection.
+                    self._driving = False
+                    command, actions = self._hold()
+                elif elapsed >= self._steer_burst_s and not self._straightened:
+                    # Steer window closed: finish the burst going straight so the
+                    # camera angle doesn't drift far from where the user was detected.
+                    self._straightened = True
+                    command, actions = self._straighten()
+                else:
+                    return  # mid-burst, lease renewal continues the current command
             else:
-                return  # mid-burst (lease renewal continues the drive) or already paused
+                return  # already paused
         else:
             self._state_dirty = False
+            # Re-arm so the first frame on reacquire counts as fresh.
+            self._last_vision_seq = None
             self._advance_search(now)
             command, actions = self._search_actions()
         if command != self._last_command:
@@ -278,10 +329,13 @@ class FollowPlanner(PlannerBase):
         # steer away from a target the camera has panned toward.
         pan_dir = 1.0 if self._pan_gain >= 0 else -1.0
         body_bearing = pan_dir * (pan_before - _STRAIGHT_ANGLE_DEG) + frame_bearing
-        steer_angle = self._quantise(
-            self._clamp_steer(_STRAIGHT_ANGLE_DEG + self._steer_gain * body_bearing),
-            self._steer_quantum_deg,
+        target_steer = self._clamp_steer(_STRAIGHT_ANGLE_DEG + self._steer_gain * body_bearing)
+        # Slew-limit the steer change so the wheels ramp toward the target in small
+        # steps instead of snapping to the cap in one adjustment.
+        step = _clamp(
+            target_steer - self._last_steer, -self._max_steer_step_deg, self._max_steer_step_deg
         )
+        steer_angle = self._quantise(self._last_steer + step, self._steer_quantum_deg)
         speed = self._quantise(self._speed_for(distance), self._speed_quantum_pct)
         self._last_steer = steer_angle
         self._last_speed = speed
@@ -289,12 +343,24 @@ class FollowPlanner(PlannerBase):
         # Re-arm the search state machine for the next time the target is lost.
         self._reset_search()
 
+        # Feed-forward steer compensation: when the wheels turn, the body physically
+        # rotates and the camera (body-fixed) sweeps the user out of frame.  Pre-pan
+        # the camera opposite to the turn so the rotation keeps the user centred.
+        # _pan_angle stays the clean tracking target; effective_pan is what the servo
+        # actually receives.  The sign flips with pan_dir so it works for both normal
+        # and inverted pan servos.
+        steer_deflection = steer_angle - _STRAIGHT_ANGLE_DEG
+        pan_comp = -pan_dir * self._camera_steer_comp_gain * steer_deflection
+        effective_pan = _clamp(self._pan_angle + pan_comp, self._pan_min_deg, self._pan_max_deg)
+        self._last_commanded_pan = effective_pan
+
         logger.info(
-            "track: bearing=%.1f° vbearing=%.1f° pan %.0f→%.0f tilt→%.0f steer=%.0f speed=%.0f",
+            "track: bearing=%.1f° vbearing=%.1f° pan %.0f→%.0f (eff %.0f) tilt→%.0f steer=%.0f speed=%.0f",
             frame_bearing,
             frame_vbearing,
             pan_before,
             self._pan_angle,
+            effective_pan,
             self._tilt_angle,
             steer_angle,
             speed,
@@ -302,13 +368,13 @@ class FollowPlanner(PlannerBase):
 
         command = (
             "track",
-            self._quantise(self._pan_angle, _CAM_QUANTUM_DEG),
+            self._quantise(effective_pan, _CAM_QUANTUM_DEG),
             self._quantise(self._tilt_angle, _CAM_QUANTUM_DEG),
             steer_angle,
             speed,
         )
         actions = [
-            {"method": "pan", "params": {"angle_deg": self._pan_angle}, "priority": 0},
+            {"method": "pan", "params": {"angle_deg": effective_pan}, "priority": 0},
             {"method": "tilt", "params": {"angle_deg": self._tilt_angle}, "priority": 1},
             {"method": "steer", "params": {"angle_deg": steer_angle}, "priority": 2},
             {"method": "drive", "params": {"speed_pct": speed}, "priority": 3},
@@ -325,15 +391,40 @@ class FollowPlanner(PlannerBase):
         logger.info("hold: pausing drive (no fresh detection within burst window)")
         command = (
             "hold",
-            self._quantise(self._pan_angle, _CAM_QUANTUM_DEG),
+            self._quantise(self._last_commanded_pan, _CAM_QUANTUM_DEG),
             self._quantise(self._tilt_angle, _CAM_QUANTUM_DEG),
             self._last_steer,
         )
         actions = [
-            {"method": "pan", "params": {"angle_deg": self._pan_angle}, "priority": 0},
+            {"method": "pan", "params": {"angle_deg": self._last_commanded_pan}, "priority": 0},
             {"method": "tilt", "params": {"angle_deg": self._tilt_angle}, "priority": 1},
             {"method": "steer", "params": {"angle_deg": self._last_steer}, "priority": 2},
             {"method": "drive", "params": {"speed_pct": 0.0}, "priority": 3},
+        ]
+        return command, actions
+
+    def _straighten(self) -> tuple[tuple[Any, ...], list[dict[str, Any]]]:
+        """Return wheels to straight mid-burst while continuing to drive.
+
+        Steer deflection becomes zero so the feed-forward compensation is also zero:
+        effective_pan == _pan_angle.  Updates _last_steer so the next detection's
+        slew ramp starts from straight.
+        """
+        self._last_steer = _STRAIGHT_ANGLE_DEG
+        self._last_commanded_pan = self._pan_angle
+        logger.info("track-straight: centring wheels mid-burst (speed=%.0f)", self._last_speed)
+        command = (
+            "track-straight",
+            self._quantise(self._pan_angle, _CAM_QUANTUM_DEG),
+            self._quantise(self._tilt_angle, _CAM_QUANTUM_DEG),
+            _STRAIGHT_ANGLE_DEG,
+            self._last_speed,
+        )
+        actions = [
+            {"method": "pan", "params": {"angle_deg": self._pan_angle}, "priority": 0},
+            {"method": "tilt", "params": {"angle_deg": self._tilt_angle}, "priority": 1},
+            {"method": "steer", "params": {"angle_deg": _STRAIGHT_ANGLE_DEG}, "priority": 2},
+            {"method": "drive", "params": {"speed_pct": self._last_speed}, "priority": 3},
         ]
         return command, actions
 
@@ -350,8 +441,10 @@ class FollowPlanner(PlannerBase):
             return
 
         # Sweep phase: roll the gaze around an ellipse, one phase step per interval.
-        # pan = centre + amp·sin(phase); tilt = level + amp·cos(phase) (90° lead),
-        # so the camera traces a loop rather than scanning a single horizontal line.
+        # pan = centre + amp·sin(phase); tilt = level - amp·cos(phase), so the
+        # camera traces a loop rather than scanning a single horizontal line. The
+        # minus on tilt makes the roll *start looking up* (higher tilt angle aims
+        # down on this hardware, so subtracting raises the gaze at phase 0).
         if self._last_step_at is not None and now - self._last_step_at < self._search_interval_s:
             return
         self._last_step_at = now
@@ -363,7 +456,7 @@ class FollowPlanner(PlannerBase):
             self._pan_max_deg,
         )
         self._tilt_angle = _clamp(
-            _STRAIGHT_ANGLE_DEG + self._tilt_amp * math.cos(rad),
+            _STRAIGHT_ANGLE_DEG - self._tilt_amp * math.cos(rad),
             self._tilt_min_deg,
             self._tilt_max_deg,
         )

@@ -30,6 +30,15 @@ def _vis(
     )
 
 
+def _ultra(distance: float | None) -> PerceptionEvent:
+    return PerceptionEvent(
+        timestamp="t",
+        device_id="d",
+        sensor_type="ultrasonic",
+        data={"distance_cm": distance},
+    )
+
+
 async def _run_events(
     wm: TargetWorldModel, events: list[PerceptionEvent], settle: float = 0.1
 ) -> list[WorldStateUpdate]:
@@ -128,6 +137,24 @@ async def test_vertical_bearing_tracked_smoothed_and_cleared() -> None:
     # and a vertical-only move past epsilon is enough to emit a new state.
     assert out[0].state["target_vertical_bearing_deg"] == pytest.approx(0.0)
     assert out[-1].state["target_vertical_bearing_deg"] == pytest.approx(5.0)
+
+
+@pytest.mark.asyncio
+async def test_ultrasonic_distance_preferred_over_vision() -> None:
+    wm = TargetWorldModel("d", smoothing=1.0)
+    # Vision range saturates at 75 cm; a fresh ultrasonic reading of 40 cm wins,
+    # so the planner can see the target is too close and back up.
+    out = await _run_events(wm, [_vis(True, 0.0, 75.0, 0.9), _ultra(40.0)])
+    assert out[-1].state["target_distance_cm"] == pytest.approx(40.0)
+
+
+@pytest.mark.asyncio
+async def test_stale_ultrasonic_falls_back_to_vision_range() -> None:
+    # ultrasonic_max_age_s=0 → any ultrasonic reading is stale by the next tick,
+    # so the world model falls back to the vision range estimate.
+    wm = TargetWorldModel("d", smoothing=1.0, ultrasonic_max_age_s=0.0)
+    out = await _run_events(wm, [_ultra(40.0), _vis(True, 0.0, 75.0, 0.9)])
+    assert out[-1].state["target_distance_cm"] == pytest.approx(75.0)
 
 
 @pytest.mark.asyncio

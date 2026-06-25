@@ -162,10 +162,22 @@ def test_follow_user_wires_the_new_layers_and_reuses_action() -> None:
     pipeline = get_routine("follow-user")(_client(), "nomon-1", {})
     assert isinstance(pipeline, Pipeline)
     slots = pipeline._slots
-    assert isinstance(slots["perception"]._impl, VisionPerception)  # type: ignore[union-attr]
+    # Perception fans vision in with the forward ultrasonic (for close-range distance).
+    perception = slots["perception"]
+    assert isinstance(perception, FanInSlot)
+    assert any(isinstance(impl, VisionPerception) for impl in perception._impls)  # type: ignore[union-attr]
+    assert any(
+        getattr(impl, "_sensor_type", None) == "ultrasonic" for impl in perception._impls  # type: ignore[union-attr]
+    )
     assert isinstance(slots["world_model"]._impl, TargetWorldModel)  # type: ignore[union-attr]
     assert isinstance(slots["planner"]._impl, FollowPlanner)  # type: ignore[union-attr]
     assert isinstance(slots["action"]._impl, VehicleAction)  # type: ignore[union-attr]
+
+
+def _follow_vision(pipeline: Pipeline) -> VisionPerception:
+    """Pull the VisionPerception out of follow-user's fan-in perception slot."""
+    perception = pipeline._slots["perception"]
+    return next(i for i in perception._impls if isinstance(i, VisionPerception))  # type: ignore[union-attr]
 
 
 def test_follow_user_uses_fake_detector_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -174,7 +186,7 @@ def test_follow_user_uses_fake_detector_via_env(monkeypatch: pytest.MonkeyPatch)
         '[{"cx": 0.5, "cy": 0.5, "w": 0.2, "h": 0.6, "confidence": 0.9}]',
     )
     pipeline = get_routine("follow-user")(_client(), "nomon-1", {})
-    perception = cast(VisionPerception, pipeline._slots["perception"]._impl)  # type: ignore[union-attr]
+    perception = _follow_vision(pipeline)
     # The injected detector returns the scripted detection regardless of the frame.
     detections = perception._detector.detect(b"")
     assert len(detections) == 1
@@ -196,7 +208,7 @@ def test_follow_user_params_map_to_layer_args() -> None:
         "search_step_deg": 12.0,
     }
     pipeline = get_routine("follow-user")(_client(), "nomon-1", params)
-    perception = cast(VisionPerception, pipeline._slots["perception"]._impl)  # type: ignore[union-attr]
+    perception = _follow_vision(pipeline)
     world_model = cast(TargetWorldModel, pipeline._slots["world_model"]._impl)  # type: ignore[union-attr]
     planner = cast(FollowPlanner, pipeline._slots["planner"]._impl)  # type: ignore[union-attr]
     assert perception._confidence_threshold == 0.7
@@ -220,8 +232,7 @@ def test_follow_user_params_map_to_layer_args() -> None:
 def _follow_user_detector(params: dict[str, Any]) -> Any:
     """Build the follow-user pipeline and return its injected detector."""
     pipeline = get_routine("follow-user")(_client(), "nomon-1", params)
-    perception = cast(VisionPerception, pipeline._slots["perception"]._impl)  # type: ignore[union-attr]
-    return perception._detector
+    return _follow_vision(pipeline)._detector
 
 
 def test_follow_user_default_detector_returns_a_detector() -> None:
