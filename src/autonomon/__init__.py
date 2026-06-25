@@ -33,6 +33,7 @@ from autonomon.routines import (
 from autonomon.slot import LayerSlot, SlotState
 from autonomon.world_model.base import WorldModelBase
 from autonomon.world_model.obstacle import ObstacleWorldModel
+from autonomon.world_model.occupancy import OccupancyWorldModel
 from autonomon.world_model.target import TargetWorldModel
 
 __version__ = "0.4.0"
@@ -47,6 +48,7 @@ __all__ = [
     "Perceptron",
     "VisionPerception",
     "ObstacleWorldModel",
+    "OccupancyWorldModel",
     "TargetWorldModel",
     "AvoidancePlanner",
     "RulePlanner",
