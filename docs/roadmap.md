@@ -13,6 +13,7 @@
 | 6 | Routine registry (`explore` as first entry) | ✅ Complete |
 | 6b | `follow-user` vision routine (camera + person detection) | ✅ Complete |
 | 6c | Device deployment & integration testing | ✅ Complete |
+| 6d | `follow-user` camera pan/tilt tracking, look-around search, 2 ft distance-keeping | ✅ Complete |
 | 7 | Autonomy telemetry to ArcadeDB | ⏸️ Deferred — needs device→central transport/auth design |
 
 > **Lean core (ADR-006).** Runtime layer hot-swap (`Pipeline.swap_layer` /
@@ -280,6 +281,38 @@ add more routines. Without automated deployment and CI, we cannot verify that
 the autonomy stack works end-to-end on actual hardware, and regressions can
 silently break the pipeline. Deployment scripts let developers/QA test quickly;
 CI ensures the contract holds across the fleet.
+
+---
+
+### Phase 6d — `follow-user` Camera Tracking, Search & Distance-Keeping
+
+**Goal:** Make `follow-user` actively track the person with the camera, search
+when nobody is visible, and hold a configurable standoff (default ≈ 2 ft).
+
+**Reuses unchanged:** the four-layer `Pipeline` runtime; `VisionPerception` and
+`TargetWorldModel` are extended in place, not replaced.
+
+**Delivered:**
+- ✅ **Camera centring** — `VisionPerception` now also emits a vertical bearing
+  (`target_vertical_bearing_deg`, from the box `cy` and a new `camera_vfov_deg`);
+  `TargetWorldModel` smooths and tracks it alongside the horizontal bearing.
+- ✅ **`FollowPlanner`** (`planning/follow.py`, supersedes `PursuitPlanner` for this
+  routine) — proportional pan/tilt to re-centre the person; **coupled** body
+  steering toward the *body-relative* bearing (camera pan offset + in-frame
+  bearing) so the camera self-recentres toward forward as the body turns in;
+  distance-proportional drive with a deadband (drive-while-turning); and a
+  time-driven **search** state machine — camera pan/tilt sweep, then a body-pivot
+  arc once a sweep is exhausted, resuming until the target is reacquired.
+- ✅ **`VehicleAction`** gained `pan`/`tilt` → `POST /api/camera/pan|tilt`
+  (camera-only; a failed camera command does not trigger a motor safety stop).
+- ✅ New `follow-user` params: `camera_vfov_deg`, `pan_gain`/`tilt_gain`,
+  `pan_min_deg`/`pan_max_deg`, `tilt_min_deg`/`tilt_max_deg`, `search_step_deg`,
+  `search_interval_s`, `search_tilt_offset_deg`, `body_rotate_speed_pct`,
+  `body_rotate_duration_s`; `target_distance_cm` default lowered 80 → 60 cm.
+
+**Boundary note:** no new nomothetic endpoints — `POST /api/camera/pan` and
+`/api/camera/tilt` already existed as raw actuator commands (ADR-004-legal). This
+is a pure brain-side change.
 
 ---
 

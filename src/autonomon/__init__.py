@@ -18,6 +18,7 @@ from autonomon.perception.vision import VisionPerception
 from autonomon.pipeline import Pipeline
 from autonomon.planning.avoidance import AvoidancePlanner
 from autonomon.planning.base import PlannerBase
+from autonomon.planning.follow import FollowPlanner
 from autonomon.planning.pursuit import PursuitPlanner
 from autonomon.routines import (
     ROUTINES,
@@ -33,7 +34,7 @@ from autonomon.world_model.base import WorldModelBase
 from autonomon.world_model.obstacle import ObstacleWorldModel
 from autonomon.world_model.target import TargetWorldModel
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     # Layer base classes
@@ -48,6 +49,7 @@ __all__ = [
     "TargetWorldModel",
     "AvoidancePlanner",
     "PursuitPlanner",
+    "FollowPlanner",
     "VehicleAction",
     # Vision detectors
     "Detection",

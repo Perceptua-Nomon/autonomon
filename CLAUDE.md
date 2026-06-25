@@ -82,8 +82,12 @@ implementations it needs.
 - `explore` — obstacle/cliff avoidance: `Perceptron.ultrasonic` (+ `grayscale` via a
   `FanInSlot`) → `ObstacleWorldModel` → `AvoidancePlanner` → `VehicleAction`.
 - `follow-user` — vision person-following: `VisionPerception` (polls
-  `GET /api/camera/frame`, detects a person) → `TargetWorldModel` → `PursuitPlanner` →
-  reused `VehicleAction`.
+  `GET /api/camera/frame`, detects a person) → `TargetWorldModel` → `FollowPlanner` →
+  reused `VehicleAction`. `FollowPlanner` pans/tilts the camera to keep the person
+  centred, steers the body toward the camera (so it re-centres forward as the body
+  turns in), holds a `target_distance_cm` standoff (≈ 2 ft default), and sweeps the
+  camera (then pivots the body) to search when no one is visible. (`PursuitPlanner`
+  is the earlier drive/steer-only follower, retained but superseded for this routine.)
 
 **Swappable detectors (`follow-user`):** the detector backend is chosen by *kind* via
 the `detector` param or `NOMON_VISION_DETECTOR` env var (`_build_detector` in

@@ -60,11 +60,33 @@ async def test_detected_person_yields_bearing_and_range() -> None:
 
 
 @pytest.mark.asyncio
+async def test_detected_person_below_centre_yields_positive_vertical_bearing() -> None:
+    client = _mock_client()
+    # cy = 0.75 → below frame centre; vbearing = (0.75 - 0.5) * 40 = +10.
+    det = FakeDetector([Detection(cx=0.5, cy=0.75, w=0.2, h=0.5, confidence=0.9)])
+    vision = VisionPerception(client, "nomon-test", det, camera_vfov_deg=40.0)
+
+    event = await _collect_one(vision)
+
+    assert event.data["target_vertical_bearing_deg"] == pytest.approx(10.0)
+
+
+@pytest.mark.asyncio
+async def test_detected_person_above_centre_yields_negative_vertical_bearing() -> None:
+    det = FakeDetector([Detection(cx=0.5, cy=0.25, w=0.2, h=0.5, confidence=0.9)])
+    vision = VisionPerception(_mock_client(), "nomon-test", det, camera_vfov_deg=40.0)
+    event = await _collect_one(vision)
+    # cy = 0.25 → above centre; vbearing = (0.25 - 0.5) * 40 = -10.
+    assert event.data["target_vertical_bearing_deg"] == pytest.approx(-10.0)
+
+
+@pytest.mark.asyncio
 async def test_no_person_yields_not_detected() -> None:
     vision = VisionPerception(_mock_client(), "nomon-test", FakeDetector([]))
     event = await _collect_one(vision)
     assert event.data["detected"] is False
     assert event.data["target_bearing_deg"] is None
+    assert event.data["target_vertical_bearing_deg"] is None
     assert event.data["target_distance_cm"] is None
     assert event.data["confidence"] is None
 

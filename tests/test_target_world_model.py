@@ -14,6 +14,7 @@ def _vis(
     bearing: float | None = None,
     distance: float | None = None,
     confidence: float | None = None,
+    vertical_bearing: float | None = None,
 ) -> PerceptionEvent:
     return PerceptionEvent(
         timestamp="t",
@@ -22,9 +23,19 @@ def _vis(
         data={
             "detected": detected,
             "target_bearing_deg": bearing,
+            "target_vertical_bearing_deg": vertical_bearing,
             "target_distance_cm": distance,
             "confidence": confidence,
         },
+    )
+
+
+def _ultra(distance: float | None) -> PerceptionEvent:
+    return PerceptionEvent(
+        timestamp="t",
+        device_id="d",
+        sensor_type="ultrasonic",
+        data={"distance_cm": distance},
     )
 
 
@@ -110,3 +121,46 @@ async def test_ema_smooths_measurements() -> None:
     out = await _run_events(wm, [_vis(True, 0.0, 100.0, 0.9), _vis(True, 10.0, 100.0, 0.9)])
     # Second bearing is EMA-smoothed: 0.5*10 + 0.5*0 = 5.0 (not the raw 10).
     assert out[-1].state["target_bearing_deg"] == pytest.approx(5.0)
+
+
+@pytest.mark.asyncio
+async def test_vertical_bearing_tracked_smoothed_and_cleared() -> None:
+    wm = TargetWorldModel("d", smoothing=0.5, emit_bearing_epsilon_deg=0.1)
+    out = await _run_events(
+        wm,
+        [
+            _vis(True, 0.0, 100.0, 0.9, vertical_bearing=0.0),
+            _vis(True, 0.0, 100.0, 0.9, vertical_bearing=10.0),
+        ],
+    )
+    # First emission carries the vertical bearing; second is EMA-smoothed to 5.0,
+    # and a vertical-only move past epsilon is enough to emit a new state.
+    assert out[0].state["target_vertical_bearing_deg"] == pytest.approx(0.0)
+    assert out[-1].state["target_vertical_bearing_deg"] == pytest.approx(5.0)
+
+
+@pytest.mark.asyncio
+async def test_ultrasonic_distance_preferred_over_vision() -> None:
+    wm = TargetWorldModel("d", smoothing=1.0)
+    # Vision range saturates at 75 cm; a fresh ultrasonic reading of 40 cm wins,
+    # so the planner can see the target is too close and back up.
+    out = await _run_events(wm, [_vis(True, 0.0, 75.0, 0.9), _ultra(40.0)])
+    assert out[-1].state["target_distance_cm"] == pytest.approx(40.0)
+
+
+@pytest.mark.asyncio
+async def test_stale_ultrasonic_falls_back_to_vision_range() -> None:
+    # ultrasonic_max_age_s=0 → any ultrasonic reading is stale by the next tick,
+    # so the world model falls back to the vision range estimate.
+    wm = TargetWorldModel("d", smoothing=1.0, ultrasonic_max_age_s=0.0)
+    out = await _run_events(wm, [_ultra(40.0), _vis(True, 0.0, 75.0, 0.9)])
+    assert out[-1].state["target_distance_cm"] == pytest.approx(75.0)
+
+
+@pytest.mark.asyncio
+async def test_vertical_bearing_cleared_on_age_out() -> None:
+    wm = TargetWorldModel("d", lost_target_timeout_s=0.1, smoothing=1.0)
+    out = await _run_events(wm, [_vis(True, 0.0, 90.0, 0.9, vertical_bearing=8.0)])
+    # The final emission (after the timeout) reports the target lost with cleared bearings.
+    assert out[-1].state["target_visible"] is False
+    assert out[-1].state["target_vertical_bearing_deg"] is None

@@ -32,8 +32,9 @@ class VisionPerception(PerceptionBase):
     ``PerceptionEvent(sensor_type="vision")`` with::
 
         {"detected": bool,
-         "target_bearing_deg": float | None,   # +ve = target to the right of centre
-         "target_distance_cm": float | None,   # rough estimate from box height
+         "target_bearing_deg": float | None,            # +ve = target right of centre
+         "target_vertical_bearing_deg": float | None,   # +ve = target below centre
+         "target_distance_cm": float | None,            # rough estimate from box height
          "confidence": float | None}
 
     When no person clears the threshold, ``detected`` is False and the other
@@ -57,6 +58,10 @@ class VisionPerception(PerceptionBase):
     camera_hfov_deg : float
         Camera horizontal field of view in degrees, used to map a box's
         horizontal offset to a bearing. Default 70.0.
+    camera_vfov_deg : float
+        Camera vertical field of view in degrees, used to map a box's vertical
+        offset to a bearing for camera tilt tracking. Default 43.0 (the VFOV
+        implied by a 70° HFOV at 16:9).
     confidence_threshold : float
         Minimum detection confidence to treat a person as the target. Default 0.5.
     range_ref_distance_cm : float
@@ -77,6 +82,7 @@ class VisionPerception(PerceptionBase):
         poll_interval_s: float = 0.3,
         timeout_s: float = 2.0,
         camera_hfov_deg: float = 70.0,
+        camera_vfov_deg: float = 43.0,
         confidence_threshold: float = 0.5,
         range_ref_distance_cm: float = 150.0,
         range_ref_box_height: float = 0.5,
@@ -88,6 +94,7 @@ class VisionPerception(PerceptionBase):
         self._poll_interval_s = poll_interval_s
         self._timeout_s = timeout_s
         self._camera_hfov_deg = camera_hfov_deg
+        self._camera_vfov_deg = camera_vfov_deg
         self._confidence_threshold = confidence_threshold
         self._range_ref_distance_cm = range_ref_distance_cm
         self._range_ref_box_height = range_ref_box_height
@@ -121,7 +128,26 @@ class VisionPerception(PerceptionBase):
             logger.warning("vision detection failed: %s", exc)
             return
 
-        await queue_out.put(self._build_event(self._select(detections)))
+        target = self._select(detections)
+        event = self._build_event(target)
+        if target is not None:
+            logger.info(
+                "vision detected: bearing=%.1f° vbearing=%.1f° dist=%.0fcm conf=%.2f",
+                event.data["target_bearing_deg"],
+                event.data["target_vertical_bearing_deg"],
+                event.data["target_distance_cm"],
+                event.data["confidence"],
+            )
+        elif detections:
+            logger.info(
+                "vision: %d detection(s) but none ≥ threshold %.2f (max conf %.2f)",
+                len(detections),
+                self._confidence_threshold,
+                max(d.confidence for d in detections),
+            )
+        else:
+            logger.debug("vision: no detections in frame")
+        await queue_out.put(event)
 
     def _select(self, detections: list[Detection]) -> Detection | None:
         """Return the highest-confidence person above the threshold, or None."""
@@ -135,16 +161,19 @@ class VisionPerception(PerceptionBase):
             data: dict[str, object] = {
                 "detected": False,
                 "target_bearing_deg": None,
+                "target_vertical_bearing_deg": None,
                 "target_distance_cm": None,
                 "confidence": None,
             }
         else:
             bearing = (target.cx - 0.5) * self._camera_hfov_deg
+            vertical_bearing = (target.cy - 0.5) * self._camera_vfov_deg
             box_h = max(target.h, _MIN_BOX_HEIGHT)
             distance = self._range_ref_distance_cm * self._range_ref_box_height / box_h
             data = {
                 "detected": True,
                 "target_bearing_deg": bearing,
+                "target_vertical_bearing_deg": vertical_bearing,
                 "target_distance_cm": distance,
                 "confidence": target.confidence,
             }

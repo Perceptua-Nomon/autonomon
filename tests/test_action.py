@@ -74,6 +74,57 @@ async def test_steer_maps_to_api_steer() -> None:
 
 
 @pytest.mark.asyncio
+async def test_pan_maps_to_camera_pan() -> None:
+    client = _mock_client()
+    results: asyncio.Queue = asyncio.Queue()
+    action = VehicleAction(client, device_id="nomon-test", ttl_ms=400, results=results)
+
+    await _run_plan(
+        action,
+        _plan([{"method": "pan", "params": {"angle_deg": 110}, "priority": 0}]),
+        results,
+        1,
+    )
+
+    client.post.assert_awaited_once_with("/api/camera/pan", json={"angle_deg": 110, "ttl_ms": 400})
+
+
+@pytest.mark.asyncio
+async def test_tilt_maps_to_camera_tilt() -> None:
+    client = _mock_client()
+    results: asyncio.Queue = asyncio.Queue()
+    action = VehicleAction(client, device_id="nomon-test", ttl_ms=400, results=results)
+
+    await _run_plan(
+        action,
+        _plan([{"method": "tilt", "params": {"angle_deg": 75}, "priority": 0}]),
+        results,
+        1,
+    )
+
+    client.post.assert_awaited_once_with("/api/camera/tilt", json={"angle_deg": 75, "ttl_ms": 400})
+
+
+@pytest.mark.asyncio
+async def test_failed_camera_command_does_not_trigger_safety_stop() -> None:
+    """A pan that fails to reach the device must NOT issue a motor safety stop."""
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.post.side_effect = httpx.ConnectError("connection refused")
+    results: asyncio.Queue = asyncio.Queue()
+    action = VehicleAction(
+        client, device_id="nomon-test", results=results, max_retries=0, backoff_base_s=0.0
+    )
+
+    out = await _run_plan(
+        action, _plan([{"method": "pan", "params": {"angle_deg": 110}, "priority": 0}]), results, 1
+    )
+
+    assert out[0].success is False
+    posted = [c.args[0] for c in client.post.await_args_list]
+    assert "/api/hat/motor/stop" not in posted  # camera failure is not a motion hazard
+
+
+@pytest.mark.asyncio
 async def test_stop_maps_to_motor_stop_with_no_body() -> None:
     client = _mock_client()
     results: asyncio.Queue = asyncio.Queue()

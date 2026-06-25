@@ -50,6 +50,9 @@
 #   NOMON_VISION_MODEL_CONFIG
 #                          MobileNet-SSD .prototxt (opencv-dnn only). Auto-fetched
 #                          alongside the model when unset.
+#   NOMON_LOG_LEVEL        Plugin log level (DEBUG/INFO/WARNING/ERROR). Written to
+#                          /etc/autonomon/autonomon.env; the CLI reads it and falls
+#                          back to WARNING. Default WARNING.
 #
 # What the script does (release mode):
 #   1. Saves the current installed autonomon version for rollback.
@@ -102,7 +105,7 @@ if [[ -f "${ENV_FILE}" ]]; then
         val="${val#\"}" ; val="${val%\"}"
         val="${val#\'}" ; val="${val%\'}"
         case "${key}" in
-            NOMON_PI_HOST|NOMON_SSH_KEY|NOMON_REMOTE_DIR|NOMON_ROUTINE_CATALOG_PATH|NOMON_SUDO_PASS|NOMON_VISION_DETECTOR|NOMON_VISION_MODEL_PATH|NOMON_VISION_MODEL_CONFIG)
+            NOMON_PI_HOST|NOMON_SSH_KEY|NOMON_REMOTE_DIR|NOMON_ROUTINE_CATALOG_PATH|NOMON_SUDO_PASS|NOMON_VISION_DETECTOR|NOMON_VISION_MODEL_PATH|NOMON_VISION_MODEL_CONFIG|NOMON_LOG_LEVEL)
                 export "${key}=${val}" ;;
         esac
     done < "${ENV_FILE}"
@@ -118,6 +121,8 @@ _NOMON_ROUTINE_CATALOG_PATH_QUOTED="$(printf '%q' "${NOMON_ROUTINE_CATALOG_PATH:
 _NOMON_VISION_DETECTOR_QUOTED="$(printf '%q' "${NOMON_VISION_DETECTOR:-}")"
 _NOMON_VISION_MODEL_PATH_QUOTED="$(printf '%q' "${NOMON_VISION_MODEL_PATH:-}")"
 _NOMON_VISION_MODEL_CONFIG_QUOTED="$(printf '%q' "${NOMON_VISION_MODEL_CONFIG:-}")"
+# Plugin log level (autonomon-owned; written to /etc/autonomon/autonomon.env).
+_NOMON_LOG_LEVEL_QUOTED="$(printf '%q' "${NOMON_LOG_LEVEL:-}")"
 
 # ── Argument parsing ───────────────────────────────────────────────────────────
 
@@ -168,7 +173,7 @@ if [[ -n "${PI_HOST}" ]]; then
         SSH_OPTS+=(-i "${NOMON_SSH_KEY}")
     fi
     echo "==> Deploying autonomon${VERSION:+ ${VERSION}} → ${PI_HOST}"
-    RUN_CMD=(ssh "${SSH_OPTS[@]}" "${PI_HOST}" "NOMON_SKIP_TESTS=${SKIP_TESTS} NOMON_SUDO_PASS=${_NOMON_SUDO_PASS_QUOTED} NOMON_ROUTINE_CATALOG_PATH=${_NOMON_ROUTINE_CATALOG_PATH_QUOTED} NOMON_VISION_DETECTOR=${_NOMON_VISION_DETECTOR_QUOTED} NOMON_VISION_MODEL_PATH=${_NOMON_VISION_MODEL_PATH_QUOTED} NOMON_VISION_MODEL_CONFIG=${_NOMON_VISION_MODEL_CONFIG_QUOTED} NOMON_DEPLOY_VERSION=${_VERSION_QUOTED} NOMON_DEPLOY_LOCAL=${_DEPLOY_LOCAL_QUOTED} NOMON_DEPLOY_REMOTE_DIR=${_REMOTE_DIR_QUOTED} bash -ls")
+    RUN_CMD=(ssh "${SSH_OPTS[@]}" "${PI_HOST}" "NOMON_SKIP_TESTS=${SKIP_TESTS} NOMON_SUDO_PASS=${_NOMON_SUDO_PASS_QUOTED} NOMON_ROUTINE_CATALOG_PATH=${_NOMON_ROUTINE_CATALOG_PATH_QUOTED} NOMON_VISION_DETECTOR=${_NOMON_VISION_DETECTOR_QUOTED} NOMON_VISION_MODEL_PATH=${_NOMON_VISION_MODEL_PATH_QUOTED} NOMON_VISION_MODEL_CONFIG=${_NOMON_VISION_MODEL_CONFIG_QUOTED} NOMON_LOG_LEVEL=${_NOMON_LOG_LEVEL_QUOTED} NOMON_DEPLOY_VERSION=${_VERSION_QUOTED} NOMON_DEPLOY_LOCAL=${_DEPLOY_LOCAL_QUOTED} NOMON_DEPLOY_REMOTE_DIR=${_REMOTE_DIR_QUOTED} bash -ls")
 else
     echo "==> Deploying autonomon${VERSION:+ ${VERSION}} locally"
     export NOMON_SKIP_TESTS="${SKIP_TESTS}"
@@ -176,6 +181,7 @@ else
     export NOMON_VISION_DETECTOR="${NOMON_VISION_DETECTOR:-}"
     export NOMON_VISION_MODEL_PATH="${NOMON_VISION_MODEL_PATH:-}"
     export NOMON_VISION_MODEL_CONFIG="${NOMON_VISION_MODEL_CONFIG:-}"
+    export NOMON_LOG_LEVEL="${NOMON_LOG_LEVEL:-}"
     export NOMON_DEPLOY_VERSION="${VERSION}"
     export NOMON_DEPLOY_LOCAL="${DEPLOY_LOCAL}"
     export NOMON_DEPLOY_REMOTE_DIR="${NOMON_REMOTE_DIR:-}"
@@ -405,6 +411,8 @@ echo "  Catalogue published (routines: ${_published}) ✓"
 VISION_DETECTOR="${NOMON_VISION_DETECTOR:-yolo-onnx}"
 VISION_MODEL_PATH="${NOMON_VISION_MODEL_PATH:-}"
 VISION_MODEL_CONFIG="${NOMON_VISION_MODEL_CONFIG:-}"
+# Plugin log level: from .env.device, defaulting to WARNING (quiet in normal runs).
+LOG_LEVEL="${NOMON_LOG_LEVEL:-WARNING}"
 echo "==> Vision detector: ${VISION_DETECTOR}"
 
 case "${VISION_DETECTOR}" in
@@ -524,6 +532,7 @@ NOMON_PLUGIN_KEY=${PLUGIN_KEY_PATH}
 NOMON_PLUGIN_NAME=${PLUGIN_NAME}
 NOMON_DEVICE_ID=${DEVICE_HOSTNAME}
 NOMON_VISION_DETECTOR=${VISION_DETECTOR}
+NOMON_LOG_LEVEL=${LOG_LEVEL}
 EOF_PLUGIN_ENV
 if [[ -n "${VISION_MODEL_PATH}" ]]; then
     echo "NOMON_VISION_MODEL_PATH=${VISION_MODEL_PATH}" >> "${_tmp_env}"
