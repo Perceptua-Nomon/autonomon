@@ -37,7 +37,7 @@ from autonomon.world_model.obstacle import ObstacleWorldModel
 from autonomon.world_model.occupancy import OccupancyWorldModel
 from autonomon.world_model.target import TargetWorldModel
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = [
     # Layer base classes

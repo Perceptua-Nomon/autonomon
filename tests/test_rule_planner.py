@@ -4,6 +4,7 @@ equivalence with the hand-written AvoidancePlanner."""
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import pytest
 
@@ -12,7 +13,7 @@ from autonomon.planning.base import PlannerBase
 from autonomon.planning.rule import bundled_rules_path
 
 # A compact avoid/cruise table equivalent to AvoidancePlanner with no hold.
-_AVOID_CRUISE_RULES = [
+_AVOID_CRUISE_RULES: list[dict[str, Any]] = [
     {
         "name": "avoid",
         "any_of": [{"obstacle_ahead": True}, {"cliff_detected": True}],

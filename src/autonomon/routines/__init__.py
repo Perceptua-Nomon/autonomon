@@ -50,7 +50,7 @@ def _union_params_schema() -> dict[str, dict[str, Any]]:
 # nomothetic never imports autonomon.
 nomon_manifest: dict[str, object] = {
     "name": "autonomon",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "routines": available_routines(),
     "params_schema": _union_params_schema(),
 }
