@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "autonomon"
-version = "0.4.0"
+version = "0.5.0"
 description = "Four-layer autonomous capabilities framework for the nomon fleet."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -28,6 +28,9 @@ classifiers = [
 dependencies = [
     "httpx>=0.25",
     "cryptography>=41.0",
+    # TOML rule tables for RulePlanner. tomllib is stdlib on 3.11+; tomli is the
+    # pure-Python backport for 3.9/3.10. Tiny and dependency-free either way.
+    "tomli>=2.0; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
@@ -65,6 +68,11 @@ Repository = "https://github.com/Perceptua/autonomon"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# Ship the bundled rule tables (RulePlanner / patrol) inside the wheel so
+# bundled_rules_path() resolves them from an installed package, not just a checkout.
+"autonomon.planning" = ["rules/*.toml"]
 
 [tool.black]
 line-length = 100

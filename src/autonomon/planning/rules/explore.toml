@@ -1,0 +1,29 @@
+# `explore` rule table for RulePlanner — a data-driven reproduction of the
+# AvoidancePlanner avoid/cruise behaviour with the `explore` routine's defaults
+# (forward 60, reverse -60, turn 135 deg, 2.5 s avoid hold).
+#
+# Selected by build_explore(..., params={"planner": "rule"}). It demonstrates
+# that RulePlanner (Phase 4) reproduces the hand-written planner; see
+# tests/test_rule_planner.py for the equivalence test and ADR-007 for context.
+#
+# First match wins, so the catch-all `cruise` rule must come last.
+
+[[rules]]
+name = "avoid"
+hold_s = 2.5
+# Trigger on either an obstacle ahead OR a cliff edge (OR semantics via any_of).
+any_of = [{ obstacle_ahead = true }, { cliff_detected = true }]
+actions = [
+    { method = "stop", params = {}, priority = 0 },
+    { method = "drive", params = { speed_pct = -60.0 }, priority = 1 },
+    { method = "steer", params = { angle_deg = 135.0 }, priority = 2 },
+]
+
+[[rules]]
+name = "cruise"
+# Empty `when` is a catch-all: steer straight and drive forward.
+when = {}
+actions = [
+    { method = "steer", params = { angle_deg = 90.0 }, priority = 0 },
+    { method = "drive", params = { speed_pct = 60.0 }, priority = 1 },
+]

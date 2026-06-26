@@ -6,6 +6,7 @@ never run here (the end-to-end run is covered by test_pipeline_integration).
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock
 
@@ -19,10 +20,12 @@ from autonomon import (
     FanInSlot,
     FollowPlanner,
     ObstacleWorldModel,
+    OccupancyWorldModel,
     OpenCvDnnDetector,
     OpenCvHogDetector,
     Perceptron,
     Pipeline,
+    RulePlanner,
     TargetWorldModel,
     UnknownRoutineError,
     VehicleAction,
@@ -282,6 +285,63 @@ def test_follow_user_unknown_detector_raises() -> None:
 
 
 # ---------------------------------------------------------------------------
+# patrol factory wiring (Phases 3 + 4 consumer)
+# ---------------------------------------------------------------------------
+
+
+def test_available_routines_lists_patrol() -> None:
+    assert "patrol" in available_routines()
+
+
+def test_patrol_wires_occupancy_world_model_and_rule_planner() -> None:
+    pipeline = get_routine("patrol")(_client(), "nomon-1", {})
+    assert isinstance(pipeline, Pipeline)
+    slots = pipeline._slots
+    perception = slots["perception"]
+    assert isinstance(perception, FanInSlot)
+    sensor_types = {impl._sensor_type for impl in perception._impls}  # type: ignore[union-attr]
+    assert sensor_types == {"ultrasonic", "grayscale"}
+    assert isinstance(slots["world_model"]._impl, OccupancyWorldModel)  # type: ignore[union-attr]
+    assert isinstance(slots["planner"]._impl, RulePlanner)  # type: ignore[union-attr]
+    assert isinstance(slots["action"]._impl, VehicleAction)  # type: ignore[union-attr]
+
+
+def test_patrol_default_rules_are_the_bundled_table() -> None:
+    pipeline = get_routine("patrol")(_client(), "nomon-1", {})
+    planner = cast(RulePlanner, pipeline._slots["planner"]._impl)  # type: ignore[union-attr]
+    names = [r["name"] for r in planner._rules]
+    assert names == ["avoid_cliff", "avoid", "caution", "cruise"]
+
+
+def test_patrol_params_map_to_world_model() -> None:
+    params: dict[str, Any] = {
+        "obstacle_threshold_cm": 25.0,
+        "cliff_threshold": 180.0,
+        "cell_size_cm": 5.0,
+        "grid_radius_cm": 50.0,
+        "decay_s": 6.0,
+    }
+    pipeline = get_routine("patrol")(_client(), "nomon-1", params)
+    wm = cast(OccupancyWorldModel, pipeline._slots["world_model"]._impl)  # type: ignore[union-attr]
+    assert wm._obstacle_threshold_cm == 25.0
+    assert wm._cliff_threshold == 180.0
+    assert wm._cell_size_cm == 5.0
+    assert wm._grid_radius_cm == 50.0
+    assert wm._decay_s == 6.0
+
+
+def test_patrol_custom_rules_path_overrides_bundled(tmp_path: Path) -> None:
+    table = tmp_path / "custom.toml"
+    table.write_text(
+        '[[rules]]\nname = "go"\nwhen = {}\n'
+        'actions = [{ method = "drive", params = { speed_pct = 10.0 }, priority = 0 }]\n'
+    )
+    pipeline = get_routine("patrol")(_client(), "nomon-1", {"rules_path": str(table)})
+    planner = cast(RulePlanner, pipeline._slots["planner"]._impl)  # type: ignore[union-attr]
+    assert [r["name"] for r in planner._rules] == ["go"]
+
+
+# ---------------------------------------------------------------------------
 # Manifest
 # ---------------------------------------------------------------------------
 
@@ -290,8 +350,11 @@ def test_manifest_advertises_routines_and_params() -> None:
     assert nomon_manifest["name"] == "autonomon"
     assert "explore" in nomon_manifest["routines"]  # type: ignore[operator]
     assert "follow-user" in nomon_manifest["routines"]  # type: ignore[operator]
+    assert "patrol" in nomon_manifest["routines"]  # type: ignore[operator]
     params_schema = nomon_manifest["params_schema"]
     assert "obstacle_threshold_cm" in params_schema  # type: ignore[operator]
     assert "cliff_detection" in params_schema  # type: ignore[operator]
     # follow-user params are in the union too.
     assert "target_distance_cm" in params_schema  # type: ignore[operator]
+    # patrol-specific params are in the union too.
+    assert "grid_radius_cm" in params_schema  # type: ignore[operator]
