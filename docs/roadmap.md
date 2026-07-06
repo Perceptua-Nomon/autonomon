@@ -14,7 +14,7 @@
 | 6b | `follow-user` vision routine (camera + person detection) | ✅ Complete |
 | 6c | Device deployment & integration testing | ✅ Complete |
 | 6d | `follow-user` camera pan/tilt tracking, look-around search, 2 ft distance-keeping | ✅ Complete |
-| 7 | Autonomy telemetry to ArcadeDB | ⏸️ Deferred — needs device→central transport/auth design |
+| 7 | Autonomy telemetry to ArcadeDB | ✅ Complete — MQTT device→central transport (autonomon Phase 7 / nomothetic Phase 27) |
 
 > **Lean core (ADR-006).** Runtime layer hot-swap (`Pipeline.swap_layer` /
 > `LayerSlot.swap`) and competing-planner fan-in arbitration (`MergeStrategy.ARBITRATE`,
@@ -318,17 +318,33 @@ is a pure brain-side change.
 
 ### Phase 7 — Autonomy Telemetry to ArcadeDB
 
-**Status:** ⏸️ **Deferred (needs more design).** The open question is the
-**device→central transport and auth**: central nomothetic routes authenticate a
-user JWT (`jwt_required`), which a headless autonomy plugin does not have. Options
-include a fleet-scoped device identity, a relay through the device API, or a
-dedicated ingestion token — this should be settled before building. The
-`VehicleAction` results-queue seam and the `cli.py` `report()` hook already exist,
-so picking this up later is additive.
+**Status:** ✅ **Complete.** The open question — the **device→central transport
+and auth** — was settled the same way nomothetic Phase 25 settled device
+telemetry: **MQTT is the device→central transport**, so no new
+device-authenticated central REST ingestion endpoint is introduced (which would
+have re-opened the deferred device→central auth design). autonomon itself is
+unchanged: its `StatusReporter` already reports `starting`/`running`/`stopping`/
+`error` lifecycle events (with `run_id` + `device_id`) to the device's routine
+status sink. nomothetic forwards those recorded events to central, which persists
+them.
 
-**Goal:** Persist autonomy run records and lifecycle events to the central ArcadeDB.
-
-**Deliverables (when resumed):**
-- `autonomon.telemetry.AutonomyPublisher`: batches `ActionResult` and lifecycle events; sends to nomothetic `/api/telemetry/autonomy`
-- `nomographic` migration: `AutonomyRun` and `AutonomyEvent` vertex types in `central/`
-- `nomothetic` endpoint: `POST /api/telemetry/autonomy` (central mode only)
+**Design (as built):**
+- **autonomon:** no change. The existing `StatusReporter.report()` seam
+  (`cli.py`) is the run/event source. Per-action `ActionResult` telemetry was
+  deliberately **not** forwarded — explore loops every ~100 ms, so that would
+  flood the topic for little fleet-dashboard value; the `VehicleAction`
+  results-queue seam remains available if a consumer ever needs it.
+- **nomothetic (device, Phase 27):** `autonomy_forwarder.AutonomyEventForwarder`
+  mirrors every event recorded by the `RoutineLogStore` (via a new `on_event`
+  observer hook) onto the MQTT autonomy topic (`nomon/autonomy`,
+  `NOMON_MQTT_AUTONOMY_TOPIC`). Best-effort, bounded queue, reconnect back-off —
+  no broker means autonomy history simply stays device-local.
+- **nomothetic (central, Phase 27):** the existing `TelemetryConsumer` also
+  subscribes to the autonomy topic and persists runs/events via
+  `autonomy_store.{InMemory,Sql}AutonomyStore`. Served by
+  `GET /api/fleet/devices/{vin}/autonomy` and
+  `GET /api/fleet/devices/{vin}/autonomy/{run_id}/events` (central JWT,
+  ownership-scoped).
+- **nomographic:** central migration `V4__add_autonomy_schema.sql` —
+  `AutonomyRun` + `AutonomyEvent` vertices, `PerformedBy` (run→Vehicle) and
+  `PartOf` (event→run) edges.

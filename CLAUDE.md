@@ -154,7 +154,7 @@ Same toolchain as nomothetic (`black` line length 100, `ruff`, `mypy`, `pytest`)
 ## Key Docs
 
 - `docs/architecture.md` — layer diagram, message schemas, routines, nomothetic API surface
-- `docs/roadmap.md` — phase status (3, 4, 7 deferred; 5/6b/6c active)
+- `docs/roadmap.md` — phase status (3, 4 deferred; 5/6b/6c/6d/7 complete)
 - `docs/adr/001-layered-architecture.md` — the four-layer design
 - `docs/adr/003-routine-registry.md` — routines as pipeline factories
 - `docs/adr/004-autonomon-is-the-brain.md` — all cognition here, nomothetic is a gateway
