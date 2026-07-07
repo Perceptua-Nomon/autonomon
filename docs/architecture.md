@@ -88,11 +88,14 @@ autonomon/
     ├── world_model/
     │   ├── __init__.py
     │   ├── base.py       WorldModelBase abstract class
-    │   └── obstacle.py   ObstacleWorldModel — threshold obstacle/cliff fusion
+    │   ├── obstacle.py   ObstacleWorldModel — threshold obstacle/cliff fusion
+    │   └── occupancy.py  OccupancyWorldModel — decaying robot-centric costmap + memory
     ├── planning/
     │   ├── __init__.py
     │   ├── base.py       PlannerBase abstract class
-    │   └── avoidance.py  AvoidancePlanner — rule-based avoid/cruise selection
+    │   ├── avoidance.py  AvoidancePlanner — rule-based avoid/cruise selection
+    │   ├── rule.py       RulePlanner — ordered TOML rule table (first match wins)
+    │   └── rules/        Bundled rule tables (explore.toml, patrol.toml)
     └── action/
         ├── __init__.py
         ├── base.py       ActionBase abstract class
@@ -176,6 +179,15 @@ tracked in the roadmap):
   ultrasonic (`obstacle_ahead`) and grayscale (`cliff_detected`) into a small
   boolean state. Emits the first observation as a baseline (empty `delta`) so the
   planner always has an initial state, then delta-based on change.
+- **`OccupancyWorldModel`** (`world_model.occupancy`) — the Phase-3 occupancy
+  grid: a **robot-centric local costmap** of recently-seen obstacle cells with
+  configurable time **decay**. Adds short-term spatial memory
+  (`recently_blocked`, `occupied_cells`, `nearest_obstacle_cm`, a serialisable
+  `occupancy` snapshot) on top of the same `obstacle_ahead`/`cliff_detected`
+  booleans, so it is a drop-in `WorldModelBase`. Emission is debounced on the
+  salient booleans so grid churn never floods the planner. With a single forward
+  ultrasonic and no odometry, cells are placed on the forward axis only — a
+  decaying range-profile, not a world-frame map (ADR-007). Consumed by `patrol`.
 - **`AvoidancePlanner`** (`planning.avoidance`) — two rules: obstacle/cliff →
   stop + reverse + steer; otherwise cruise forward. Debounces on the selected
   strategy, emitting a new `ActionPlan` only when it changes. Once triggered, an
@@ -183,6 +195,15 @@ tracked in the roadmap):
   robot commits to backing up and turning rather than darting forward the instant
   the front sensor clears (`explore` defaults this to 2.5 s; the layer default is
   0.0 = re-evaluate immediately).
+- **`RulePlanner`** (`planning.rule`) — the Phase-4 rule-table planner: an ordered
+  table (first match wins) pairing a condition over world state with an action
+  sequence, loadable from TOML (`RulePlanner.from_toml`). Conditions support
+  `lt`/`le`/`gt`/`ge`/`ne`/`eq`/`in`/`truthy`/`exists` operators and `any_of`
+  OR-groups; a per-rule `hold_s` generalises `avoid_duration_s`. Reuses
+  `AvoidancePlanner`'s idle-tick loop, so behaviour is identical — only the rule
+  set is data. Bundled tables `planning/rules/explore.toml` (proven equivalent to
+  `AvoidancePlanner`) and `planning/rules/patrol.toml`; consumed by `patrol` and
+  the `explore` `planner: "rule"` variant.
 - **`VehicleAction`** (`action.vehicle`) — executes plan actions in priority
   order, mapping `drive`/`steer`/`stop`/`pan`/`tilt` to `POST /api/drive`,
   `/api/steer`, `/api/hat/motor/stop`, `/api/camera/pan`, `/api/camera/tilt`.
@@ -420,6 +441,7 @@ fully wired `Pipeline`:
 ```
 build_explore(client, device_id, params)      -> Pipeline   # reuses every existing layer
 build_follow_user(client, device_id, params)  -> Pipeline   # needs new perception/world-model/planner
+build_patrol(client, device_id, params)        -> Pipeline   # OccupancyWorldModel + RulePlanner (Ph3+4)
 ```
 
 The `explore` factory is the production form of the integration test's
@@ -436,6 +458,7 @@ its factory:
 ROUTINES: dict[str, RoutineFactory] = {
     "explore":     build_explore,
     "follow-user": build_follow_user,
+    "patrol":      build_patrol,
 }
 get_routine(name) -> RoutineFactory      # raises on unknown name
 ```
@@ -471,8 +494,9 @@ onto layer constructor arguments is the factory's responsibility.
 
 | Routine | Example params | Maps onto |
 |---------|----------------|-----------|
-| `explore` | `obstacle_threshold_cm`, `forward_speed_pct`, `turn_angle_deg`, `cliff_threshold` | `ObstacleWorldModel` + `AvoidancePlanner` constructor args |
+| `explore` | `obstacle_threshold_cm`, `forward_speed_pct`, `turn_angle_deg`, `cliff_threshold`, `planner` (`avoidance`\|`rule`) | `ObstacleWorldModel` + `AvoidancePlanner`/`RulePlanner` constructor args |
 | `follow-user` | `target_distance_cm` (≈ 2 ft default), `max_speed_pct`, `pan_gain`/`tilt_gain`, `search_step_deg`, `body_rotate_*` | `VisionPerception` + `TargetWorldModel` + `FollowPlanner` constructor args |
+| `patrol` | `obstacle_threshold_cm`, `cliff_threshold`, `cell_size_cm`, `grid_radius_cm`, `decay_s`, `rules_path` | `OccupancyWorldModel` constructor args; `rules_path` selects the `RulePlanner` TOML table (motion lives in the table) |
 
 ### Lifecycle and manifest relationship
 
@@ -492,17 +516,19 @@ behaviour:
 
 ### Reusable vs net-new per routine
 
-| Layer | `explore` | `follow-user` |
-|-------|-----------|---------------|
-| Perception | `Perceptron.ultrasonic` (+ `grayscale`) — reused | **new** vision perception impl: pulls raw camera frames from nomothetic and runs person detection *in autonomon* (ADR-004) — not a nomothetic endpoint |
-| World Model | `ObstacleWorldModel` — reused | **new** target-position world model (tracks bearing, vertical bearing, distance) |
-| Planning | `AvoidancePlanner` — reused | **new** `FollowPlanner`: camera pan/tilt tracking, coupled body steering, distance-keeping, and camera-sweep + body-pivot search |
-| Action | `VehicleAction` — reused | `VehicleAction` — reused (now also `pan`/`tilt`) |
+| Layer | `explore` | `follow-user` | `patrol` |
+|-------|-----------|---------------|----------|
+| Perception | `Perceptron.ultrasonic` (+ `grayscale`) — reused | **new** vision perception impl: pulls raw camera frames from nomothetic and runs person detection *in autonomon* (ADR-004) — not a nomothetic endpoint | `Perceptron.ultrasonic` + `grayscale` — reused |
+| World Model | `ObstacleWorldModel` — reused | **new** target-position world model (tracks bearing, vertical bearing, distance) | **new** `OccupancyWorldModel` (Phase 3): decaying local costmap + memory |
+| Planning | `AvoidancePlanner` — reused | **new** `FollowPlanner`: camera pan/tilt tracking, coupled body steering, distance-keeping, and camera-sweep + body-pivot search | **new** `RulePlanner` (Phase 4) from `patrol.toml` |
+| Action | `VehicleAction` — reused | `VehicleAction` — reused (now also `pan`/`tilt`) | `VehicleAction` — reused |
 
 `explore` is pure wiring of what already exists. `follow-user` is the proof the
 registry is worth building: it reuses the action layer and the whole `Pipeline`
-runtime, but swaps in three new layer implementations — exactly the
-per-slot extensibility ADR-001 promised.
+runtime, but swaps in three new layer implementations — exactly the per-slot
+extensibility ADR-001 promised. `patrol` is the consumer that justifies Phases 3
+& 4 (ADR-007): it reuses perception and action but swaps in the occupancy-grid
+world model and the TOML rule-table planner, the first routine that needs both.
 
 ---
 

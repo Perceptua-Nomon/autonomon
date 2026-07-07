@@ -23,8 +23,8 @@ Single `src`-layout package (`src/autonomon/`):
 | `fan_in.py` | `FanInSlot` — multi-source perception fan-in (pass-through) |
 | `plugin_auth.py` | Ed25519 challenge-response device-JWT auth (nomothetic ADR-019) |
 | `perception/` | `PerceptionBase`, `Perceptron` (configurable single-sensor) |
-| `world_model/` | `WorldModelBase`, `ObstacleWorldModel` |
-| `planning/` | `PlannerBase`, `AvoidancePlanner` |
+| `world_model/` | `WorldModelBase`, `ObstacleWorldModel`, `OccupancyWorldModel` (Phase 3 costmap) |
+| `planning/` | `PlannerBase`, `AvoidancePlanner`, `RulePlanner` (Phase 4 TOML rule table) + `rules/*.toml` |
 | `action/` | `ActionBase`, `VehicleAction` |
 | `routines/` | registry, the `explore` factory, the `nomon-autonomon` CLI, catalogue publish, status reporting |
 
@@ -88,6 +88,16 @@ implementations it needs.
   turns in), holds a `target_distance_cm` standoff (≈ 2 ft default), and sweeps the
   camera (then pivots the body) to search when no one is visible. (`PursuitPlanner`
   is the earlier drive/steer-only follower, retained but superseded for this routine.)
+- `patrol` — memory-aware area patrol: `Perceptron.ultrasonic` + `grayscale` (via a
+  `FanInSlot`) → `OccupancyWorldModel` → `RulePlanner` → `VehicleAction`. The first
+  routine consuming Phases 3 & 4 (ADR-007): `OccupancyWorldModel` is a decaying
+  robot-centric costmap that adds a `recently_blocked` memory field, and the planner
+  is a `RulePlanner` loaded from the bundled `planning/rules/patrol.toml` (a `caution`
+  rule keys on that memory). Behaviour is the TOML rule table — swappable via the
+  `rules_path` param — while world-model params (`obstacle_threshold_cm`,
+  `cliff_threshold`, `cell_size_cm`, `grid_radius_cm`, `decay_s`) tune perception/memory.
+  `explore` can also opt into `RulePlanner` via `planner: "rule"` (bundled `explore.toml`,
+  proven equivalent to `AvoidancePlanner`).
 
 **Swappable detectors (`follow-user`):** the detector backend is chosen by *kind* via
 the `detector` param or `NOMON_VISION_DETECTOR` env var (`_build_detector` in
@@ -154,9 +164,10 @@ Same toolchain as nomothetic (`black` line length 100, `ruff`, `mypy`, `pytest`)
 ## Key Docs
 
 - `docs/architecture.md` — layer diagram, message schemas, routines, nomothetic API surface
-- `docs/roadmap.md` — phase status (3, 4, 7 deferred; 5/6b/6c active)
+- `docs/roadmap.md` — phase status (only 7 deferred; 3 & 4 done via the `patrol` consumer)
 - `docs/adr/001-layered-architecture.md` — the four-layer design
 - `docs/adr/003-routine-registry.md` — routines as pipeline factories
 - `docs/adr/004-autonomon-is-the-brain.md` — all cognition here, nomothetic is a gateway
 - `docs/adr/005-file-based-catalog-handoff.md` — standalone venvs, file catalogue
 - `docs/adr/006-lean-core-no-hot-swap-typed-queues.md` — removed hot-swap/arbitration; typed queues
+- `docs/adr/007-occupancy-grid-rule-planner-with-consumer.md` — Phases 3 & 4 built with the `patrol` consumer
