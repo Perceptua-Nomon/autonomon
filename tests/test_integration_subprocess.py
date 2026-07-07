@@ -159,6 +159,20 @@ def test_explore_routine_drives_the_mock_device() -> None:
     assert "/api/drive" in device.posts
 
 
+def test_patrol_routine_drives_the_mock_device() -> None:
+    # patrol wires OccupancyWorldModel -> RulePlanner(patrol.toml): a near
+    # ultrasonic reading trips the table's `avoid` rule (stop -> reverse -> steer),
+    # proving the Phase 3 + Phase 4 layers run end-to-end through the real CLI.
+    with _MockDevice(ultrasonic_distance_cm=10.0) as device:
+        events, _ = _run_routine(device, {"routine": "patrol"})
+
+    types = [e["type"] for e in events]
+    assert "starting" in types
+    assert "running" in types
+    assert "/api/hat/motor/stop" in device.posts
+    assert "/api/drive" in device.posts
+
+
 def test_follow_user_routine_pursues_a_fake_target() -> None:
     # A scripted far detection (small box height -> large distance) must drive the
     # robot forward toward the target. The fake-detector env hook avoids needing a model.

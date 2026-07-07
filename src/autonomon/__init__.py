@@ -20,6 +20,7 @@ from autonomon.planning.avoidance import AvoidancePlanner
 from autonomon.planning.base import PlannerBase
 from autonomon.planning.follow import FollowPlanner
 from autonomon.planning.pursuit import PursuitPlanner
+from autonomon.planning.rule import RulePlanner
 from autonomon.routines import (
     ROUTINES,
     RoutineFactory,
@@ -27,14 +28,16 @@ from autonomon.routines import (
     available_routines,
     build_explore,
     build_follow_user,
+    build_patrol,
     get_routine,
 )
 from autonomon.slot import LayerSlot, SlotState
 from autonomon.world_model.base import WorldModelBase
 from autonomon.world_model.obstacle import ObstacleWorldModel
+from autonomon.world_model.occupancy import OccupancyWorldModel
 from autonomon.world_model.target import TargetWorldModel
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = [
     # Layer base classes
@@ -46,8 +49,10 @@ __all__ = [
     "Perceptron",
     "VisionPerception",
     "ObstacleWorldModel",
+    "OccupancyWorldModel",
     "TargetWorldModel",
     "AvoidancePlanner",
+    "RulePlanner",
     "PursuitPlanner",
     "FollowPlanner",
     "VehicleAction",
@@ -71,6 +76,7 @@ __all__ = [
     "get_routine",
     "build_explore",
     "build_follow_user",
+    "build_patrol",
     # Message types
     "PerceptionEvent",
     "WorldStateUpdate",

@@ -20,6 +20,8 @@ from autonomon.fan_in import FanInSlot
 from autonomon.perception.perceptron import Perceptron
 from autonomon.pipeline import Pipeline
 from autonomon.planning.avoidance import AvoidancePlanner
+from autonomon.planning.base import PlannerBase
+from autonomon.planning.rule import RulePlanner, bundled_rules_path
 from autonomon.world_model.obstacle import ObstacleWorldModel
 
 # Routine-level defaults for the behaviours an operator most often tunes. These
@@ -89,6 +91,17 @@ EXPLORE_PARAMS_SCHEMA: dict[str, dict[str, Any]] = {
             "the ultrasonic sensor alone."
         ),
         "default": True,
+    },
+    "planner": {
+        "type": "string",
+        "description": (
+            "Planner backend: 'avoidance' (default) is the hand-written AvoidancePlanner "
+            "honouring all speed/angle params; 'rule' uses the data-driven RulePlanner "
+            "loaded from the bundled explore.toml rule table, which reproduces the same "
+            "avoid/cruise behaviour with fixed values (forward 60, reverse -60, turn 135, "
+            "2.5 s hold) and ignores the per-speed params."
+        ),
+        "default": "avoidance",
     },
 }
 
@@ -182,9 +195,24 @@ def build_explore(
     # by default (the planner's own default is 0.0 = re-evaluate immediately).
     planner_kwargs["avoid_duration_s"] = params.get("avoid_duration_s", _DEFAULT_AVOID_DURATION_S)
 
+    # Planner backend selection. 'avoidance' (default) honours the speed/angle
+    # params above; 'rule' swaps in the data-driven RulePlanner from the bundled
+    # explore.toml table (Phase 4), demonstrating the rule engine reproduces the
+    # same behaviour. Default keeps explore's behaviour and tuning unchanged.
+    planner_kind = params.get("planner", "avoidance")
+    planner: PlannerBase
+    if planner_kind == "rule":
+        planner = RulePlanner.from_toml(bundled_rules_path("explore.toml"), device_id)
+    elif planner_kind == "avoidance":
+        planner = AvoidancePlanner(**planner_kwargs)
+    else:
+        raise ValueError(
+            f"unknown planner '{planner_kind}' for explore; expected 'avoidance' or 'rule'"
+        )
+
     return Pipeline(
         perception=perception,
         world_model=ObstacleWorldModel(**world_model_kwargs),
-        planner=AvoidancePlanner(**planner_kwargs),
+        planner=planner,
         action=VehicleAction(client, device_id=device_id),
     )

@@ -7,8 +7,8 @@
 | 0 | nomon_explore plugin (pre-framework) | ✅ Complete |
 | 1 | Core framework (`autonomon` package) | ✅ Complete |
 | 2 | Perception implementations (ultrasonic, grayscale, battery) | ✅ Complete |
-| 3 | Occupancy-grid world model | ⏸️ Deferred — speculative (no consumer; the `ObstacleWorldModel` slice suffices) |
-| 4 | Rule-based planner (rule-table/TOML) | ⏸️ Deferred — speculative (no consumer; the `AvoidancePlanner` slice suffices) |
+| 3 | Occupancy-grid world model | ✅ Complete — `OccupancyWorldModel` (robot-centric local costmap + decay), built with the `patrol` consumer (ADR-007) |
+| 4 | Rule-based planner (rule-table/TOML) | ✅ Complete — `RulePlanner` (TOML rule table), consumed by `patrol` + the `explore` rule variant (ADR-007) |
 | 5 | Vehicle action executor — retry + safety-stop | ✅ Complete |
 | 6 | Routine registry (`explore` as first entry) | ✅ Complete |
 | 6b | `follow-user` vision routine (camera + person detection) | ✅ Complete |
@@ -113,38 +113,45 @@ modeling; no autonomy logic is ever pushed down into nomothetic or nomopractic.
 
 ### Phase 3 — Occupancy-Grid World Model
 
-**Status:** ⏸️ **Deferred (speculative — no consumer).** No current or planned routine
-needs a spatial occupancy grid: `explore` uses boolean obstacle/cliff state, and
-`follow-user` uses a target's relative bearing/range. A grid serves mapping /
-path-planning behaviours that are not on the roadmap; building it now would be
-speculative generality. Revisit when a routine actually needs spatial mapping.
+**Status:** ✅ **Complete** — built *with* a concrete consumer (the `patrol`
+routine) per ADR-006/ADR-007, rather than as speculative infrastructure.
 
-**Done (and sufficient for current routines):**
-- `autonomon.world_model.ObstacleWorldModel`: threshold-based fusion of ultrasonic
-  (`obstacle_ahead`) and grayscale (`cliff_detected`) into a small boolean state
-- Delta-based `WorldStateUpdate` emission; first observation emitted as a baseline
-  so the planner always has an initial state
+**Delivered:**
+- `autonomon.world_model.OccupancyWorldModel`: a **robot-centric local costmap**
+  with configurable **state decay** (cells age out after `decay_s` — the deferred
+  decay item). Beyond `ObstacleWorldModel`'s booleans it adds short-term spatial
+  memory — `recently_blocked`, `occupied_cells`, `nearest_obstacle_cm`, and a
+  serialisable `occupancy` snapshot — while still emitting
+  `obstacle_ahead`/`cliff_detected`, so it is a drop-in `WorldModelBase`. Emission
+  is debounced on the salient booleans so grid churn never floods the planner.
+- `ObstacleWorldModel` remains for `explore` (the minimal boolean slice).
 
-**Deferred (build only when a consumer exists):**
-- `OccupancyWorldModel`: spatial occupancy grid (not just boolean flags)
-- Configurable state decay (obstacles age out after N seconds without new readings)
+**Scope note (deferred stretch).** With the fleet's single forward ultrasonic and
+no odometry, cells are placed on the forward axis only — a decaying range-profile,
+not a world-frame map. A **world-frame grid on an odometry/encoder source** (and
+off-axis cell placement from a sweeping sensor) is the remaining stretch, deferred
+until a routine needs true spatial mapping; the model upgrades to it without an
+interface change (ADR-007).
 
 ---
 
 ### Phase 4 — Rule-Based Planner (rule-table / TOML)
 
-**Status:** ⏸️ **Deferred (speculative — no consumer).** `AvoidancePlanner` already
-covers `explore`, and `follow-user` uses a dedicated pursuit planner, not a rule
-table. A generic TOML-loadable rule engine is config infrastructure for a second
-rule-based behaviour that does not yet exist. Revisit when one does.
+**Status:** ✅ **Complete** — built *with* a concrete consumer (`patrol`, plus an
+`explore` rule-table variant) per ADR-006/ADR-007.
 
-**Done (and sufficient for current routines):**
-- `autonomon.planning.AvoidancePlanner`: two rules (avoid on obstacle/cliff →
-  stop+reverse+steer; otherwise cruise forward); debounced on the selected strategy
-
-**Deferred (build only when a second rule-based routine exists):**
-- `RulePlanner`: evaluates world state against an ordered rule table, loadable from
-  TOML (`{"condition": {...}, "actions": [...], "priority": 0}`)
+**Delivered:**
+- `autonomon.planning.RulePlanner`: evaluates world state against an ordered rule
+  table (first match wins), loadable from TOML via `RulePlanner.from_toml`.
+  Conditions support `lt`/`le`/`gt`/`ge`/`ne`/`eq`/`in`/`truthy`/`exists`
+  operators and `any_of` OR-groups; a per-rule `hold_s` generalises
+  `AvoidancePlanner.avoid_duration_s`. It reuses `AvoidancePlanner`'s idle-tick
+  loop, so runtime behaviour is identical — only the rule set is data.
+- Bundled tables `planning/rules/explore.toml` (reproduces `explore`'s
+  avoid/cruise, proven equivalent by test) and `planning/rules/patrol.toml`.
+- `AvoidancePlanner` remains `explore`'s default planner (no regression); the rule
+  engine is opt-in via `build_explore(params={"planner": "rule"})` and the basis
+  of `patrol`.
 
 ---
 
