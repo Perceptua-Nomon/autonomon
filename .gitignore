@@ -221,3 +221,7 @@ __marimo__/
 # Vision models (fetched/exported via scripts/fetch_model.sh, not committed)
 models/
 *.onnx
+
+# Claude Code local config
+CLAUDE.md
+.claude/
